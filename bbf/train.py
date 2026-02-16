@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 The Google Research Authors.
+# Copyright 2026 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,8 +40,8 @@ import jax.profiler
 import numpy as np
 import tensorflow.compat.v2 as tf
 
-from bbf import eval_run_experiment
-from bbf.agents import spr_agent
+from bigger_better_faster.bbf import eval_run_experiment
+from bigger_better_faster.bbf.agents import spr_agent
 
 FLAGS = flags.FLAGS
 CONFIGS_DIR = './configs'
@@ -57,9 +57,7 @@ AGENTS = [
 ]
 
 # flags are defined when importing run_xm_preprocessing
-# flags.DEFINE_enum('agent', 'SPR', AGENTS, 'Name of the agent.')
-flags.DEFINE_enum('agent', 'BBF', AGENTS, 'Name of the agent.')
-flags.DEFINE_string('game_name', 'ChopperCommand', 'Name of the Atari game.')
+flags.DEFINE_enum('agent', 'SPR', AGENTS, 'Name of the agent.')
 flags.DEFINE_integer('run_number', 1, 'Run number.')
 flags.DEFINE_integer('agent_seed', None, 'If None, use the run_number.')
 flags.DEFINE_boolean('no_seeding', True, 'If True, choose a seed at random.')
@@ -182,28 +180,6 @@ def main(unused_argv):
     Args:
         unused_argv: Arguments (unused).
   """
-  # Print which GPU is being used (based on CUDA_VISIBLE_DEVICES)
-  try:
-    import subprocess
-    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'all')
-    gpu_names = subprocess.check_output(
-        ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
-        text=True
-    ).strip().split('\n')
-    
-    if cuda_visible != 'all':
-      gpu_indices = [int(x.strip()) for x in cuda_visible.split(',')]
-      gpu_list = [f"GPU {idx}: {gpu_names[idx]}" for idx in gpu_indices]
-      print(f'=' * 60)
-      print(f'Using {", ".join(gpu_list)}')
-      print(f'=' * 60)
-    else:
-      print(f'=' * 60)
-      print(f'Using all GPUs: {len(gpu_names)} devices')
-      print(f'=' * 60)
-  except Exception as e:
-    print(f'Could not get GPU info: {e}')
-  
   logging.set_verbosity(logging.INFO)
   tf.compat.v1.enable_v2_behavior()
 
@@ -224,32 +200,22 @@ def main(unused_argv):
       tf.config.experimental.set_visible_devices([], 'GPU')
     except tf.errors.NotFoundError as tferror:
       print(tferror)
-      
+
     base_dir = FLAGS.base_dir
     gin_files = FLAGS.gin_files
-    # gin_files = list('bbf/configs/BBF.gin')
     gin_bindings = FLAGS.gin_bindings
     print('Got gin bindings:')
     print(gin_bindings)
     gin_bindings = [b.replace("'", '') for b in gin_bindings]
     print('Sanitized gin bindings to:')
     print(gin_bindings)
-    # print("Gin file: ", gin_files)
-    # print("base_dir: ", base_dir)
-    # print("agent: ", FLAGS.agent)
-    # print("run_number: ", FLAGS.run_number)
+
   # Add code for setting random seed using the run_number
   if FLAGS.no_seeding:
     seed = int(time.time() * 10000000) % 2**31
   else:
     seed = FLAGS.run_number if not FLAGS.agent_seed else FLAGS.agent_seed
   set_random_seed(seed)
-  
-  # Add game_name as gin binding to override the config file
-  game_name_binding = f'DataEfficientAtariRunner.game_name="{FLAGS.game_name}"'
-  atari_lib_binding = f'atari_lib.create_atari_environment.game_name="{FLAGS.game_name}"'
-  gin_bindings = gin_bindings + [game_name_binding, atari_lib_binding]
-  
   run_experiment.load_gin_configs(gin_files, gin_bindings)
 
   write_config(base_dir, seed, FLAGS.tag, FLAGS.agent)
