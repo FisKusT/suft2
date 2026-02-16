@@ -39,8 +39,8 @@ import jax.profiler
 import numpy as np
 import tensorflow.compat.v2 as tf
 
-from bigger_better_faster.bbf import eval_run_experiment
-from bigger_better_faster.bbf.agents import spr_agent
+from bbf import eval_run_experiment
+from bbf.agents import spr_agent
 
 FLAGS = flags.FLAGS
 CONFIGS_DIR = './configs'
@@ -179,6 +179,28 @@ def main(unused_argv):
     Args:
         unused_argv: Arguments (unused).
   """
+    # Print which GPU is being used (based on CUDA_VISIBLE_DEVICES)
+  try:
+    import subprocess
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'all')
+    gpu_names = subprocess.check_output(
+        ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+        text=True
+    ).strip().split('\n')
+    
+    if cuda_visible != 'all':
+      gpu_indices = [int(x.strip()) for x in cuda_visible.split(',')]
+      gpu_list = [f"GPU {idx}: {gpu_names[idx]}" for idx in gpu_indices]
+      print(f'=' * 60)
+      print(f'Using {", ".join(gpu_list)}')
+      print(f'=' * 60)
+    else:
+      print(f'=' * 60)
+      print(f'Using all GPUs: {len(gpu_names)} devices')
+      print(f'=' * 60)
+  except Exception as e:
+    print(f'Could not get GPU info: {e}')
+    
   logging.set_verbosity(logging.INFO)
   tf.compat.v1.enable_v2_behavior()
 

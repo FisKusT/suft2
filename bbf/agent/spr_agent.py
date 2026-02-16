@@ -36,9 +36,8 @@ import numpy as onp
 import optax
 import tensorflow as tf
 
-from bigger_better_faster.bbf import spr_networks
-from bigger_better_faster.bbf.replay_memory import subsequence_replay_buffer
-
+from bbf import spr_networks
+from bbf.replay_memory import subsequence_replay_buffer
 
 def _pmap_device_order():
   """Gets JAX's default device assignments as used in pmap."""
@@ -172,20 +171,33 @@ def interpolate_weights(
 
   def combination(old_param, new_param):
     return old_param * old_weight + new_param * new_weight
+    
+  # Use tree_map on leaf arrays only, handling dict structures manually
+  # to avoid FrozenDict vs dict type mismatches during JIT tracing
+  def interpolate_subtree(old_subtree, new_subtree):
+    # Flatten both trees to get leaves and structure
+    old_leaves, old_treedef = jax.tree_util.tree_flatten(old_subtree)
+    new_leaves, new_treedef = jax.tree_util.tree_flatten(new_subtree)
+    # Combine the leaves
+    combined_leaves = [combination(o, n) for o, n in zip(old_leaves, new_leaves)]
+    # Reconstruct using old tree structure
+    return jax.tree_util.tree_unflatten(old_treedef, combined_leaves)
 
   combined_params = {}
   if keys is None:
     keys = old_params.keys()
   for k in keys:
-    combined_params[k] = jax.tree_util.tree_map(combination, old_params[k],
-                                                new_params[k])
+    combined_params[k] = interpolate_subtree(old_params[k], new_params[k])
+  
   for k, v in old_params.items():
     if k not in keys:
       combined_params[k] = v
 
   if strip_params_layer:
-    combined_params = {"params": combined_params}
-  return FrozenDict(combined_params)
+    combined_params = FrozenDict({"params": FrozenDict(combined_params)})
+  else:
+    combined_params = FrozenDict(combined_params)
+  return combined_params
 
 
 @functools.partial(
@@ -1283,6 +1295,9 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         },
         support=self._support,
     )
+    # Ensure online_params is a FrozenDict for compatibility with optax masking
+    if not isinstance(self.online_params, FrozenDict):
+        self.online_params = FrozenDict(self.online_params)
     optimizer = create_scaling_optimizer(
         self._optimizer_name,
         warmup=self.head_warmup,

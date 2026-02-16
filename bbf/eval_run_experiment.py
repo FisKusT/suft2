@@ -628,7 +628,7 @@ class DataEfficientAtariRunner(run_experiment.Runner):
     for iteration in range(self._start_iteration, self._num_iterations):
       statistics = self._run_one_iteration(iteration)
       self._log_experiment(iteration, statistics)
-      self._checkpoint_experiment(iteration)
+      # self._checkpoint_experiment(iteration) # disabled checkpointing since we don't need it
     self._summary_writer.flush()
 
 
