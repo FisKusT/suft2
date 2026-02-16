@@ -72,3 +72,4 @@ dmypy.json
 suft2/
 # SLURM runs
 slurm_run/
+slurm-*.out
