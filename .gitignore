@@ -68,6 +68,7 @@ coverage.xml
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Logs
-*.log
+# Project specific
+suft2/
+# SLURM runs
+slurm_run/
