@@ -116,6 +116,13 @@ def write_config(base_dir, seed, tag, agent):
   clean_cfg['tag'] = tag
   clean_cfg['agent'] = agent
 
+  # Print gin configuration
+  print('=' * 80)
+  print('GIN CONFIGURATION FOR THIS RUN:')
+  print('=' * 80)
+  print(json.dumps(to_str(clean_cfg), indent=2))
+  print('=' * 80)
+
   for _ in range(10):
     config_dir = epath.Path(base_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -237,6 +244,14 @@ def main(unused_argv):
   else:
     seed = FLAGS.run_number if not FLAGS.agent_seed else FLAGS.agent_seed
   set_random_seed(seed)
+  
+  # Print gin files and bindings being loaded
+  print('=' * 80)
+  print('LOADING GIN CONFIGURATION:')
+  print(f'Gin files: {gin_files}')
+  print(f'Gin bindings: {gin_bindings}')
+  print('=' * 80)
+  
   run_experiment.load_gin_configs(gin_files, gin_bindings)
 
   write_config(base_dir, seed, FLAGS.tag, FLAGS.agent)
