@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 The Google Research Authors.
+# Copyright 2026 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -220,39 +220,6 @@ class DataEfficientAtariRunner(run_experiment.Runner):
     self._agent.reset_all(self._initialize_episode(self.train_envs))
     self._agent.cache_train_state()
     self.game_name = game_name.lower().replace('_', '').replace(' ', '')
-    # Log game information
-    logging.info('Atari Game: %s', game_name)
-    if self.train_envs:
-      env = self.train_envs[0]
-      version_logged = False
-      
-      # Try to get version from unwrapped environment
-      if hasattr(env, 'unwrapped'):
-        unwrapped_env = env.unwrapped
-        if hasattr(unwrapped_env, 'spec') and unwrapped_env.spec:
-          logging.info('Game Version: %s', unwrapped_env.spec.id)
-          version_logged = True
-      
-      # Try to get version from wrapped environment
-      if not version_logged and hasattr(env, 'spec') and env.spec:
-        logging.info('Game Version: %s', env.spec.id)
-        version_logged = True
-      
-      # Try to get version from environment attribute
-      if not version_logged and hasattr(env, 'environment'):
-        inner_env = env.environment
-        if hasattr(inner_env, 'spec') and inner_env.spec:
-          logging.info('Game Version: %s', inner_env.spec.id)
-          version_logged = True
-        elif hasattr(inner_env, 'unwrapped'):
-          unwrapped_inner = inner_env.unwrapped
-          if hasattr(unwrapped_inner, 'spec') and unwrapped_inner.spec:
-            logging.info('Game Version: %s', unwrapped_inner.spec.id)
-            version_logged = True
-      
-      if not version_logged:
-        logging.info('Game Version: Could not determine (likely v5 if using Gymnasium)')
-
 
   def _run_one_phase(self,
                      envs,
@@ -409,7 +376,7 @@ class DataEfficientAtariRunner(run_experiment.Runner):
       step += 1
       episode_end.fill(0)
       total_steps += len(live_envs)
-      actions, old_q_values = self._agent.step()
+      actions = self._agent.step()
 
       # The agent may be hanging on to the previous new_obs, so we don't
       # want to change it yet.
@@ -468,7 +435,8 @@ class DataEfficientAtariRunner(run_experiment.Runner):
         # Perform reward clipping.
         rewards = np.clip(rewards, -1, 1)
 
-      self._agent.log_transition(new_obs, actions, rewards, terminals, episode_end, old_q_values)
+      self._agent.log_transition(new_obs, actions, rewards, terminals,
+                                 episode_end)
 
       if (
           not live_envs
@@ -660,7 +628,7 @@ class DataEfficientAtariRunner(run_experiment.Runner):
     for iteration in range(self._start_iteration, self._num_iterations):
       statistics = self._run_one_iteration(iteration)
       self._log_experiment(iteration, statistics)
-      # self._checkpoint_experiment(iteration) # Disabled to prevent saving checkpoints
+      self._checkpoint_experiment(iteration)
     self._summary_writer.flush()
 
 
