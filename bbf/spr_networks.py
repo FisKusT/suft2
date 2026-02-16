@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 The Google Research Authors.
+# Copyright 2026 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -818,16 +818,16 @@ class RainbowDQNNetwork(nn.Module):
     return predictions
 
   def flatten_spatial_latent(self, spatial_latent, has_batch=False):
-    # logging.info('Spatial latent shape: %s', str(spatial_latent.shape))
+    logging.info('Spatial latent shape: %s', str(spatial_latent.shape))
     if self.use_spatial_learned_embeddings:
       representation = self.embedder(spatial_latent)
     elif has_batch:
       representation = spatial_latent.reshape(spatial_latent.shape[0], -1)
     else:
       representation = spatial_latent.reshape(-1)
-    # logging.info(
-    #     'Flattened representation shape: %s', str(representation.shape)
-    # )
+    logging.info(
+        'Flattened representation shape: %s', str(representation.shape)
+    )
     return representation
 
   @nn.compact
