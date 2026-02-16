@@ -2,9 +2,9 @@
 import dopamine.jax.networks
 import dopamine.discrete_domains.gym_lib
 import dopamine.discrete_domains.run_experiment
-import bbf.spr_networks
-import bbf.agents.spr_agent
-import bbf.replay_memory.subsequence_replay_buffer
+import bigger_better_faster.bbf.spr_networks
+import bigger_better_faster.bbf.agents.spr_agent
+import bigger_better_faster.bbf.replay_memory.subsequence_replay_buffer
 
 JaxDQNAgent.gamma = 0.997
 JaxDQNAgent.min_replay_history = 2000
@@ -24,15 +24,14 @@ BBFAgent.update_horizon = 3
 BBFAgent.max_update_horizon = 10
 BBFAgent.min_gamma = 0.97
 BBFAgent.cycle_steps = 10_000
-BBFAgent.reset_every = 5_000 # Change if you change the replay ratio 20_000 5_000 baseline: 5_000
+BBFAgent.reset_every = 20_000 # Change if you change the replay ratio
 BBFAgent.shrink_perturb_keys = "encoder,transition_model"
 BBFAgent.shrink_factor = 0.5
 BBFAgent.perturb_factor = 0.5
-BBFAgent.no_resets_after = 30_000 # Need to change if training longer 100_000 baseline: 30_000
+BBFAgent.no_resets_after = 100_000 # Need to change if training longer
 BBFAgent.log_every = 100
-BBFAgent.verbose = True
-BBFAgent.replay_ratio = 256 # TODO: 64 256
-BBFAgent.batches_to_group = 8 # TODO: 2 8
+BBFAgent.replay_ratio = 64
+BBFAgent.batches_to_group = 2
 BBFAgent.batch_size = 32
 BBFAgent.spr_weight = 5
 BBFAgent.jumps = 5
@@ -59,10 +58,10 @@ bbf.agents.spr_agent.create_scaling_optimizer.weight_decay = 0.1
 
 DataEfficientAtariRunner.game_name = 'ChopperCommand'
 # Atari 100K benchmark doesn't use sticky actions.
-atari_lib.create_atari_environment.sticky_actions = True
+atari_lib.create_atari_environment.sticky_actions = False
 AtariPreprocessing.terminal_on_life_loss = True
-Runner.num_iterations = 3 # TODO: 1 10
-Runner.training_steps = 10000 # TODO: 100000    # agent steps
+Runner.num_iterations = 1
+Runner.training_steps = 100000    # agent steps
 DataEfficientAtariRunner.num_eval_episodes = 100    # agent episodes
 DataEfficientAtariRunner.num_eval_envs = 100    # agent episodes
 DataEfficientAtariRunner.num_train_envs = 1    # agent episodes
