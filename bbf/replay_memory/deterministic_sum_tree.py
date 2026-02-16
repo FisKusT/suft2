@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 The Google Research Authors.
+# Copyright 2026 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,35 +25,24 @@ import numpy as np
 
 @functools.partial(jax.jit, backend='cpu')
 def step(i, args):  # pylint: disable=unused-argument
-  # print("TAL23 step i:", i)
   query_value, index, nodes = args
-  # print("TAL23 step query_value before:", query_value, "index:", index, "nodes shape:", nodes.shape)
   left_child = index * 2 + 1
-  # print("TAL23 step left_child:", left_child)
   left_sum = nodes[left_child]
-  # print("TAL23 step left_sum:", left_sum)
   index = jax.lax.cond(query_value < left_sum, lambda x: x, lambda x: x + 1,
                        left_child)
-  # print("TAL23 step index after:", index)
   query_value = jax.lax.cond(query_value < left_sum, lambda x: x,
                              lambda x: x - left_sum, query_value)
-  # print("TAL23 step query_value after:", query_value)
   return query_value, index, nodes
 
 
 @functools.partial(jax.jit, backend='cpu')
 @functools.partial(jax.vmap, in_axes=(None, None, 0, None, None))
 def parallel_stratified_sample(rng, nodes, i, n, depth):
-  # print("TAL23 parallel_stratified_sample i:", i, "n:", n, "depth:", depth, "nodes shape:", nodes.shape)
   rng = jax.random.fold_in(rng, i)
   total_priority = nodes[0]
-  # print("TAL23 total_priority:", total_priority)
   upper_bound = (i + 1) / n
-  # print("TAL23 upper_bound:", upper_bound)
   lower_bound = i / n
-  # print("TAL23 lower_bound:", lower_bound)
   query = jax.random.uniform(rng, minval=lower_bound, maxval=upper_bound)
-  # print("TAL23 query:", query)
   _, index, _ = jax.lax.fori_loop(0, depth, step,
                                   (query * total_priority, 0, nodes))
   return index
@@ -118,7 +107,7 @@ class DeterministicSumTree(sum_tree.SumTree):
     """Performs stratified sampling using the sum tree."""
     if self._total_priority() == 0.0:
       raise Exception('Cannot sample from an empty sum tree.')
-    # print("TAL23 DeterministicSumTree.stratified_sample")
+
     indices = parallel_stratified_sample(rng, self.nodes, np.arange(batch_size),
                                          batch_size, self.depth)
     return np.minimum(indices - self.low_idx, self.highest_set)
