@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 The Google Research Authors.
+# Copyright 2026 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,9 +31,7 @@ from jax import numpy as jnp
 import numpy as np
 import tensorflow as tf
 
-from bbf.replay_memory import deterministic_sum_tree as sum_tree
-import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning, message='.*Conversion of an array with ndim > 0 to a scalar.*')
+from bigger_better_faster.bbf.replay_memory import deterministic_sum_tree as sum_tree
 
 # Defines a type describing part of the tuple returned by the replay
 # memory. Each element of the tuple is a tensor of shape [batch, ...] where
@@ -921,6 +919,7 @@ class PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
     # start = time.time()
     indices = self.sum_tree.stratified_sample(batch_size, self._rng)
     indices = np.array(indices)
+    # print("Sampling from sum tree took {}".format(time.time() - start))
     allowed_attempts = self._max_sample_attempts
 
     t_indices, b_indices = self.unravel_indices(indices)  # pylint: disable=unbalanced-tuple-unpacking
@@ -968,9 +967,7 @@ class PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
         update_horizon=update_horizon,
         gamma=gamma,
     )
-    # Find the indices element - it's before extra storage types
-    indices_position = -(1 + len(self._extra_storage_types)) if self._extra_storage_types else -1
-    transition.append(self.get_priority(transition[indices_position]))
+    transition.append(self.get_priority(transition[-1]))
     return transition
 
   def set_priority(self, indices, priorities):
