@@ -361,7 +361,7 @@ class JaxSubsequenceParallelEnvReplayBuffer(object):
     self._check_args_length(*args)
     for i, (arg_element, store_element) in enumerate(
         zip(args, self.get_add_args_signature())):
-      if isinstance(arg_element, np.ndarray):
+      if isinstance(arg_element, (np.ndarray, jnp.ndarray)) or hasattr(arg_element, 'shape'):
         arg_shape = arg_element.shape
       elif isinstance(arg_element, tuple) or isinstance(arg_element, list):
         # TODO(b/80536437). This is not efficient when arg_element is a list.
@@ -969,7 +969,25 @@ class PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
         update_horizon=update_horizon,
         gamma=gamma,
     )
-    transition.append(self.get_priority(transition[-1]))
+    # transition_elements = self.get_transition_elements(batch_size)
+    # print("Transition elements: {}".format(transition_elements))
+    
+    # # Find the index position of 'indices' in transition_elements
+    # indices_position = None
+    # for i, elem in enumerate(transition_elements):
+    #     if elem.name == 'indices':
+    #         indices_position = i
+    #         print("Indices element from transition_elements: {}".format(elem))
+    #         break
+    
+    # if indices_position is not None and indices_position < len(transition):
+    #     print("Actual indices values (position {}): shape={}, dtype={}, values={}".format(
+    #         indices_position, transition[indices_position].shape, 
+    #         transition[indices_position].dtype, transition[indices_position]))
+    
+    # print("transition[-2]: {}".format(transition[-2]))
+    # print("transition[-(1 + len(self._extra_storage_types))]: {}".format(transition[-(1 + len(self._extra_storage_types))]))
+    transition.append(self.get_priority(transition[-(1 + len(self._extra_storage_types))]))
     return transition
 
   def set_priority(self, indices, priorities):

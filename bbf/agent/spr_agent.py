@@ -38,7 +38,7 @@ import tensorflow as tf
 
 from bbf import spr_networks
 from bbf.replay_memory import subsequence_replay_buffer
-
+from bbf.replay_memory.subsequence_replay_buffer import ReplayElement
 def _pmap_device_order():
   """Gets JAX's default device assignments as used in pmap."""
   return jax.local_devices()
@@ -426,8 +426,8 @@ def select_action(
 
   rng, rng1, rng2, rng3 = jax.random.split(rng, num=4)
   p = jax.random.uniform(rng1, shape=(state.shape[0],))
-  rng2 = jax.random.split(rng2, state.shape[0])
-  q_values = get_q_values_no_actions(q_online, state, rng2)
+  network_rngs = jax.random.split(rng2, state.shape[0])
+  q_values = get_q_values_no_actions(q_online, state, network_rngs)
 
   best_actions = jnp.argmax(q_values, axis=-1)
   new_actions = jnp.where(
@@ -440,7 +440,7 @@ def select_action(
       ),
       best_actions,
   )
-  return rng, new_actions
+  return rng, new_actions, network_rngs
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
@@ -513,6 +513,7 @@ def train(
     step,  # 25
     match_online_target_rngs,  # 26, static
     target_eval_mode,  # 27, static
+    network_rngs,  # 28
 ):
   """Run one or more training steps for BBF.
 
@@ -551,6 +552,7 @@ def train(
       networks, to sync dropout etc.
     target_eval_mode: Whether to run the target network in eval mode (disabling
       dropout).
+    network_rngs: Stored RNG keys from action selection, (B, T, 2).
 
   Returns:
     Updated online params, target params, optimizer state, dynamic scale,
@@ -580,11 +582,13 @@ def train(
         same_traj_mask,
         loss_weights,
         cumulative_gamma,
+        stored_network_rngs,
     ) = inputs
     same_traj_mask = same_traj_mask[:, 1:]
     rewards = rewards[:, 0]
     terminals = terminals[:, 0]
     cumulative_gamma = cumulative_gamma[:, 0]
+    stored_network_rngs = stored_network_rngs[:, 0]  # Use RNGs from first timestep
 
     rng, rng1, rng2 = jax.random.split(rng, num=3)
     states = spr_networks.process_inputs(
@@ -601,7 +605,9 @@ def train(
     # Split the current rng to update the rng after this call
     rng, rng1, rng2 = jax.random.split(rng, num=3)
 
-    batch_rngs = jax.random.split(rng, num=states.shape[0])
+    # Use stored RNGs from action selection instead of generating new ones
+    batch_rngs = stored_network_rngs
+
     if match_online_target_rngs:
       target_rng = batch_rngs
     else:
@@ -828,6 +834,7 @@ def train(
       cumulative_gamma.reshape(
           num_batches, batch_size, *cumulative_gamma.shape[1:]
       ),
+      network_rngs.reshape(num_batches, batch_size, *network_rngs.shape[1:]),
   )
 
   (
@@ -1343,6 +1350,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       raise ValueError("Invalid replay scheme: {}".format(self._replay_scheme))
     if self._replay_type not in ["deterministic"]:
       raise ValueError("Invalid replay type: {}".format(self._replay_type))
+    # ADD extra values
+    extra_storage_types = [
+        ReplayElement('network_rngs', (2,), jnp.uint32)
+    ]
     if self._replay_scheme == "prioritized":
       buffer = subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
           observation_shape=self.observation_shape,
@@ -1352,6 +1363,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           subseq_len=self._jumps + 1,
           batch_size=self._batch_size,
           observation_dtype=self.observation_dtype,
+          extra_storage_types=extra_storage_types,
       )
     else:
       buffer = subsequence_replay_buffer.JaxSubsequenceParallelEnvReplayBuffer(
@@ -1362,6 +1374,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           subseq_len=self._jumps + 1,
           batch_size=self._batch_size,
           observation_dtype=self.observation_dtype,
+          extra_storage_types=extra_storage_types,
       )
 
     self.n_envs = buffer._n_envs  # pylint: disable=protected-access
@@ -1578,7 +1591,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
                                                 *eval_batch["state"].shape[-3:])
       eval_actions = eval_batch["action"].reshape(-1,)
       self._rng, eval_rng = jax.random.split(self._rng, 2)
-      og_actions = self.select_action(
+      og_actions, _ = self.select_action(
           eval_states,
           self.online_params,
           eval_mode=True,
@@ -1586,7 +1599,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           rng=eval_rng,
           use_noise=False,
       )
-      og_target_actions = self.select_action(
+      og_target_actions, _ = self.select_action(
           eval_states,
           self.target_network_params,
           eval_mode=True,
@@ -1631,6 +1644,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.grad_steps,
         self.match_online_target_rngs,
         self.target_eval_mode,
+        self.replay_elements["network_rngs"],
     )
     self.grad_steps += self._batches_to_group
     self.cycle_grad_steps += self._batches_to_group
@@ -1668,7 +1682,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       }
 
       if self.log_churn:
-        new_actions = self.select_action(
+        new_actions, _ = self.select_action(
             eval_states,
             new_online_params,
             eval_mode=True,
@@ -1676,7 +1690,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
             rng=eval_rng,
             use_noise=False,
         )
-        new_target_actions = self.select_action(
+        new_target_actions, _ = self.select_action(
             eval_states,
             new_target_params,
             eval_mode=True,
@@ -1722,6 +1736,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       *args,
       priority=None,
       episode_end=False,
+      network_rngs=None,
   ):
     """Stores a transition when in training mode."""
     is_prioritized = isinstance(
@@ -1739,12 +1754,17 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         priority.fill(self._replay.sum_tree.max_recorded_priority)
 
     if not self.eval_mode:
+      # Add network_rngs as extra value if available
+      extra_args = list(args)
+      if network_rngs is not None:
+        extra_args.append(network_rngs)
+
       self._replay.add(
           last_observation,
           action,
           reward,
           is_terminal,
-          *args,
+          *extra_args,
           priority=priority,
           episode_end=episode_end,
       )
@@ -1833,7 +1853,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     (self.state, self._last_observation, self._observation) = (
         self.training_state)
 
-  def log_transition(self, observation, action, reward, terminal, episode_end):
+  def log_transition(self, observation, action, reward, terminal, episode_end, network_rngs):
     self._last_observation = self._observation
     self._record_observation(observation)
 
@@ -1844,6 +1864,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           reward,
           terminal,
           episode_end=episode_end,
+          network_rngs=network_rngs,
       )
 
   def select_action(
@@ -1858,7 +1879,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     force_rng = rng is not None
     if not force_rng:
       rng = self._rng
-    new_rng, action = select_action(
+    new_rng, action, network_rngs = select_action(
         self.network_def,
         select_params,
         state,
@@ -1876,7 +1897,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     )
     if not force_rng:
       self._rng = new_rng
-    return action
+    return action, network_rngs
 
   def step(self):
     """Records the most recent transition, returns the agent's next action, and trains if appropriate.
@@ -1890,11 +1911,11 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.target_network_params if use_target else self.online_params)
     use_noise = self.eval_noise or not self.eval_mode
 
-    action = self.select_action(
+    action, network_rngs = self.select_action(
         state,
         select_params,
         eval_mode=self.eval_mode,
         use_noise=use_noise,
     )
     self.action = onp.asarray(action)
-    return self.action
+    return self.action, network_rngs
