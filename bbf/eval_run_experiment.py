@@ -376,7 +376,7 @@ class DataEfficientAtariRunner(run_experiment.Runner):
       step += 1
       episode_end.fill(0)
       total_steps += len(live_envs)
-      actions, network_rngs = self._agent.step()
+      actions, network_rngs, old_q_values, old_state = self._agent.step()
 
       # The agent may be hanging on to the previous new_obs, so we don't
       # want to change it yet.
@@ -436,7 +436,7 @@ class DataEfficientAtariRunner(run_experiment.Runner):
         rewards = np.clip(rewards, -1, 1)
 
       self._agent.log_transition(new_obs, actions, rewards, terminals,
-                                 episode_end, network_rngs)
+                                 episode_end, network_rngs, old_q_values, old_state)
 
       if (
           not live_envs
