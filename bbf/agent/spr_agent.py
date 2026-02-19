@@ -732,7 +732,6 @@ def train(
       suft_loss = jax.vmap(losses.huber_loss)(replay_chosen_current_q, replay_chosen_old_q)
       # SUFT Square_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
       # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Online action selection
-      # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Target action selection
       # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Target action selection
       # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online action selection
       # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online logits action selection
@@ -1814,26 +1813,26 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         pass  # Already 1, doesn't matter
       else:
         priority.fill(self._replay.sum_tree.max_recorded_priority)
-
-    # def q_online(state, key, actions=None, do_rollout=False):
-    #     return self.network_def.apply(
-    #         self.online_params,
-    #         state,
-    #         actions=actions,
-    #         do_rollout=do_rollout,
-    #         key=key,
-    #         rngs={"dropout": key},
-    #         support=self._support,
-    #         mutable=["batch_stats"],
-    #     )
-    # old_q_values_suft = jax.lax.stop_gradient(get_q_values_no_actions(q_online, old_state, network_rngs))
+    # Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Target action selection
+    def q_online(state, key, actions=None, do_rollout=False):
+        return self.network_def.apply(
+            self.online_params,
+            state,
+            actions=actions,
+            do_rollout=do_rollout,
+            key=key,
+            rngs={"dropout": key},
+            support=self._support,
+            mutable=["batch_stats"],
+        )
+    old_q_values_suft = get_q_values_no_actions(q_online, old_state, network_rngs)
     if not self.eval_mode:
       # Add extra values if available
       extra_args = list(args)
       if network_rngs is not None:
         extra_args.append(network_rngs)
-      if old_q_values is not None:
-        old_q_values_suft = jax.lax.stop_gradient(old_q_values)
+      if old_q_values_suft is not None:
+        old_q_values_suft = jax.lax.stop_gradient(old_q_values_suft)
         extra_args.append(old_q_values_suft)
       if old_state is not None:
         extra_args.append(old_state)
