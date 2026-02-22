@@ -1174,8 +1174,8 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     """
     # TODO: Change this logging
     # TODO: Make this run parameters
-    logging.info("Target SUFT Added [Q_target_behavior(s,a) - Q_online_current(s,a)]")
-    logging.info("SUFT Huber Loss")
+    logging.info("Distributional SUFT Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
+    logging.info("SUFT softmax_cross_entropy_loss_with_logits Loss")
     logging.info("SUFT Optimization Threshold < 1000")
     logging.info(
         "Creating %s agent with the following parameters:",
