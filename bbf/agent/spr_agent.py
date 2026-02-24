@@ -1174,7 +1174,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     """
     # TODO: Change this logging
     # TODO: Make this run parameters
-    logging.info("Distributional SUFT Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
+    logging.info("Distributional SUFT Target behavior Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
     logging.info("SUFT softmax_cross_entropy_loss_with_logits Loss")
     logging.info("SUFT Optimization Threshold < 1000")
     logging.info(
@@ -1811,10 +1811,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         pass  # Already 1, doesn't matter
       else:
         priority.fill(self._replay.sum_tree.max_recorded_priority)
-    # Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Target action selection
-    def q_online(state, key, actions=None, do_rollout=False):
+    # Target SUFT [Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
+    def q_target(state, key, actions=None, do_rollout=False):
         return self.network_def.apply(
-            self.online_params,
+            self.target_network_params,
             state,
             actions=actions,
             do_rollout=do_rollout,
@@ -1823,7 +1823,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
             support=self._support,
             mutable=["batch_stats"],
         )
-    old_q_results, _ = q_online(old_state, key=jnp.squeeze(network_rngs))
+    old_q_results, _ = q_target(old_state, key=jnp.squeeze(network_rngs))
     old_q_probabilites = old_q_results.probabilities
     old_q_probabilites = old_q_probabilites.reshape(1, *old_q_probabilites.shape)
     if not self.eval_mode:
