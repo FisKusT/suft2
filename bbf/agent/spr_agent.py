@@ -427,9 +427,9 @@ def select_action(
   rng, rng1, rng2, rng3 = jax.random.split(rng, num=4)
   p = jax.random.uniform(rng1, shape=(state.shape[0],))
   network_rngs = jax.random.split(rng2, state.shape[0])
-  q_values = get_q_values_no_actions(q_online, state, network_rngs)
+  old_q_values, old_q_probabilities, _= get_q_values_no_actions(q_online, state, network_rngs)
 
-  best_actions = jnp.argmax(q_values, axis=-1)
+  best_actions = jnp.argmax(old_q_values, axis=-1)
   new_actions = jnp.where(
       p <= epsilon,
       jax.random.randint(
@@ -440,13 +440,13 @@ def select_action(
       ),
       best_actions,
   )
-  return rng, new_actions, network_rngs, q_values, state
+  return rng, new_actions, network_rngs, old_q_values, old_q_probabilities, state
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
 def get_q_values_no_actions(model, states, rng):
   results = model(states, actions=None, do_rollout=False, key=rng)[0]
-  return results.q_values
+  return results.q_values, results.probabilities, results.logits
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -515,11 +515,12 @@ def train(
     target_eval_mode,  # 27, static
     network_rngs,  # 28
     old_q_values,  # 29
-    old_state,  # 30
-    old_network_resets,  # 31
-    old_network_optimization_steps,  # 32
-    current_network_resets,  # 33
-    current_network_optimization_steps,  # 34
+    old_q_probabilities,  # 30
+    old_state,  # 31
+    old_network_resets,  # 32
+    old_network_optimization_steps,  # 33
+    current_network_resets,  # 34
+    current_network_optimization_steps,  # 35
 ):
   """Run one or more training steps for BBF.
 
@@ -560,6 +561,7 @@ def train(
       dropout).
     network_rngs: Stored RNG keys from action selection, (B, T, 2).
     old_q_values: Q-values from action selection, (B, T, num_actions).
+    old_q_probabilities: Action probabilities from action selection, (B, T, num_actions, num_of_atoms).
     old_state: States from action selection, (B, T, H, W, C).
     old_network_resets: Network resets from action selection, (B, T).
     old_network_optimization_steps: Network optimization steps from action selection, (B, T).
@@ -595,6 +597,7 @@ def train(
         cumulative_gamma,
         stored_network_rngs,
         old_q_values,
+        old_q_probabilities,
         old_state,
         old_network_resets,
         old_network_optimization_steps,
@@ -605,6 +608,7 @@ def train(
     cumulative_gamma = cumulative_gamma[:, 0]
     stored_network_rngs = stored_network_rngs[:, 0]  # Use RNGs from first timestep
     old_q_values = old_q_values[:, 0]
+    old_q_probabilities = old_q_probabilities[:, 0]
     old_state = old_state[:, 0]
     old_network_resets = old_network_resets[:, 0]
     old_network_optimization_steps = old_network_optimization_steps[:, 0]
@@ -720,14 +724,24 @@ def train(
         spr_loss = 0
 
       # if suft_lambda > 0:
+      current_q_values, _, current_logits = get_q_values_no_actions(q_online, old_state, batch_rngs)
+      current_logits_for_suft = jnp.squeeze(current_logits)
+      current_q_values_for_suft = jnp.squeeze(current_q_values)
+      replay_chosen_current_logits = jax.vmap(lambda x, y: x[y])(current_logits_for_suft, actions[:, 0])
+      replay_chosen_current_q = jax.vmap(lambda x, y: x[y])(current_q_values_for_suft, actions[:, 0])
+
       # Logits_online_behavior(s,a)
-      old_q_probablities_for_suft = jnp.squeeze(old_q_values)
-      chosen_action_probablities_for_suft = jax.vmap(lambda x, y: x[y])(
-          old_q_probablities_for_suft, actions[:, 0]
+      old_q_probabilities_for_suft = jnp.squeeze(old_q_probabilities)
+      replay_chosen_old_probabilities = jax.vmap(lambda x, y: x[y])(
+          old_q_probabilities_for_suft, actions[:, 0]
       )            
       # Cross-entropy: old behavior distribution as target, current logits as predictions
-      suft_loss = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
-          chosen_action_probablities_for_suft, chosen_action_logits)
+      suft_loss_logits = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
+          replay_chosen_old_probabilities, replay_chosen_current_logits)
+      old_q_values_for_suft = jnp.squeeze(old_q_values)
+      replay_chosen_old_q = jax.vmap(lambda x, y: x[y])(old_q_values_for_suft, actions[:, 0])
+      suft_loss_q = jax.vmap(losses.huber_loss)(replay_chosen_current_q, replay_chosen_old_q)
+      suft_loss = suft_loss_logits + suft_loss_q
       
       # SUFT Square_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
       # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Online action selection
@@ -874,6 +888,7 @@ def train(
       ),
       network_rngs.reshape(num_batches, batch_size, *network_rngs.shape[1:]),
       old_q_values.reshape(num_batches, batch_size, *old_q_values.shape[1:]),
+      old_q_probabilities.reshape(num_batches, batch_size, *old_q_probabilities.shape[1:]),
       old_state.reshape(num_batches, batch_size, *old_state.shape[1:]),
       old_network_resets.reshape(num_batches, batch_size, *old_network_resets.shape[1:]),
       old_network_optimization_steps.reshape(num_batches, batch_size, *old_network_optimization_steps.shape[1:]),
@@ -1400,7 +1415,8 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     # ADD extra values
     extra_storage_types = [
         ReplayElement('network_rngs', (2,), jnp.uint32),
-        ReplayElement('old_q_values', (self.num_actions, self._num_atoms), jnp.float32),
+        ReplayElement('old_q_values', (self.num_actions,), jnp.float32),
+        ReplayElement('old_q_probabilities', (self.num_actions, self._num_atoms), jnp.float32),
         ReplayElement('old_state', (self.state.shape), jnp.float32),
         ReplayElement('old_network_resets', (1,), jnp.uint32),
         ReplayElement('old_network_optimization_steps', (1,), jnp.uint32),
@@ -1642,7 +1658,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
                                                 *eval_batch["state"].shape[-3:])
       eval_actions = eval_batch["action"].reshape(-1,)
       self._rng, eval_rng = jax.random.split(self._rng, 2)
-      og_actions, _, _, _ = self.select_action(
+      og_actions, _, _, _, _ = self.select_action(
           eval_states,
           self.online_params,
           eval_mode=True,
@@ -1650,7 +1666,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           rng=eval_rng,
           use_noise=False,
       )
-      og_target_actions, _, _, _ = self.select_action(
+      og_target_actions, _, _, _, _ = self.select_action(
           eval_states,
           self.target_network_params,
           eval_mode=True,
@@ -1697,6 +1713,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.target_eval_mode,
         self.replay_elements["network_rngs"],
         self.replay_elements["old_q_values"],
+        self.replay_elements["old_q_probabilities"],
         self.replay_elements["old_state"],
         self.replay_elements["old_network_resets"],
         self.replay_elements["old_network_optimization_steps"],
@@ -1739,7 +1756,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       }
 
       if self.log_churn:
-        new_actions, _, _, _ = self.select_action(
+        new_actions, _, _, _, _ = self.select_action(
             eval_states,
             new_online_params,
             eval_mode=True,
@@ -1747,7 +1764,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
             rng=eval_rng,
             use_noise=False,
         )
-        new_target_actions, _, _, _ = self.select_action(
+        new_target_actions, _, _, _, _ = self.select_action(
             eval_states,
             new_target_params,
             eval_mode=True,
@@ -1795,6 +1812,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       episode_end=False,
       network_rngs=None,
       old_q_values=None,
+      old_q_probabilities=None,
       old_state=None,
   ):
     """Stores a transition when in training mode."""
@@ -1811,29 +1829,18 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         pass  # Already 1, doesn't matter
       else:
         priority.fill(self._replay.sum_tree.max_recorded_priority)
-    # Target SUFT [Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
-    def q_target(state, key, actions=None, do_rollout=False):
-        return self.network_def.apply(
-            self.target_network_params,
-            state,
-            actions=actions,
-            do_rollout=do_rollout,
-            key=key,
-            rngs={"dropout": key},
-            support=self._support,
-            mutable=["batch_stats"],
-        )
-    old_q_results, _ = q_target(old_state, key=jnp.squeeze(network_rngs))
-    old_q_probabilites = old_q_results.probabilities
-    old_q_probabilites = old_q_probabilites.reshape(1, *old_q_probabilites.shape)
+
     if not self.eval_mode:
       # Add extra values if available
       extra_args = list(args)
       if network_rngs is not None:
         extra_args.append(network_rngs)
-      if old_q_probabilites is not None:
-        old_q_probabilites = jax.lax.stop_gradient(old_q_probabilites)
-        extra_args.append(old_q_probabilites)
+      if old_q_values is not None:
+        old_q_values = jax.lax.stop_gradient(old_q_values)
+        extra_args.append(old_q_values)
+      if old_q_probabilities is not None:
+        old_q_probabilities = jax.lax.stop_gradient(old_q_probabilities)
+        extra_args.append(old_q_probabilities)
       if old_state is not None:
         extra_args.append(old_state)
       extra_args.append(jnp.full((1,1), self.cumulative_resets, dtype=jnp.uint32))
@@ -1933,7 +1940,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     (self.state, self._last_observation, self._observation) = (
         self.training_state)
 
-  def log_transition(self, observation, action, reward, terminal, episode_end, network_rngs, old_q_values, old_state):
+  def log_transition(self, observation, action, reward, terminal, episode_end, network_rngs, old_q_values, old_q_probabilities, old_state):
     self._last_observation = self._observation
     self._record_observation(observation)
 
@@ -1946,6 +1953,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           episode_end=episode_end,
           network_rngs=network_rngs,
           old_q_values=old_q_values,
+          old_q_probabilities=old_q_probabilities,
           old_state=old_state,
       )
 
@@ -1961,7 +1969,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     force_rng = rng is not None
     if not force_rng:
       rng = self._rng
-    new_rng, action, network_rngs, old_q_values, old_state = select_action(
+    new_rng, action, network_rngs, old_q_values, old_q_probabilities, old_state = select_action(
         self.network_def,
         select_params,
         state,
@@ -1979,7 +1987,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     )
     if not force_rng:
       self._rng = new_rng
-    return action, network_rngs, old_q_values, old_state
+    return action, network_rngs, old_q_values, old_q_probabilities, old_state
 
   def step(self):
     """Records the most recent transition, returns the agent's next action, and trains if appropriate.
@@ -1993,11 +2001,11 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.target_network_params if use_target else self.online_params)
     use_noise = self.eval_noise or not self.eval_mode
     
-    action, network_rngs, old_q_values, old_state = self.select_action(
+    action, network_rngs, old_q_values, old_q_probabilities, old_state = self.select_action(
         state,
         select_params,
         eval_mode=self.eval_mode,
         use_noise=use_noise,
     )
     self.action = onp.asarray(action)
-    return self.action, network_rngs, old_q_values, old_state
+    return self.action, network_rngs, old_q_values, old_q_probabilities, old_state
