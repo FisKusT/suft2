@@ -427,7 +427,7 @@ def select_action(
   rng, rng1, rng2, rng3 = jax.random.split(rng, num=4)
   p = jax.random.uniform(rng1, shape=(state.shape[0],))
   network_rngs = jax.random.split(rng2, state.shape[0])
-  q_values = get_q_values_no_actions(q_online, state, network_rngs)
+  q_values, probabilities = get_q_values_no_actions(q_online, state, network_rngs)
 
   best_actions = jnp.argmax(q_values, axis=-1)
   new_actions = jnp.where(
@@ -440,13 +440,13 @@ def select_action(
       ),
       best_actions,
   )
-  return rng, new_actions, network_rngs, q_values, state
+  return rng, new_actions, network_rngs, probabilities, state
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
 def get_q_values_no_actions(model, states, rng):
   results = model(states, actions=None, do_rollout=False, key=rng)[0]
-  return results.q_values
+  return results.q_values, results.probabilities
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -1811,28 +1811,13 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         pass  # Already 1, doesn't matter
       else:
         priority.fill(self._replay.sum_tree.max_recorded_priority)
-    # Target SUFT [Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
-    def q_target(state, key, actions=None, do_rollout=False):
-        return self.network_def.apply(
-            self.target_network_params,
-            state,
-            actions=actions,
-            do_rollout=do_rollout,
-            key=key,
-            rngs={"dropout": key},
-            support=self._support,
-            mutable=["batch_stats"],
-        )
-    old_q_results, _ = q_target(old_state, key=jnp.squeeze(network_rngs))
-    old_q_probabilites = old_q_results.probabilities
-    old_q_probabilites = old_q_probabilites.reshape(1, *old_q_probabilites.shape)
     if not self.eval_mode:
       # Add extra values if available
       extra_args = list(args)
       if network_rngs is not None:
         extra_args.append(network_rngs)
-      if old_q_probabilites is not None:
-        old_q_probabilites = jax.lax.stop_gradient(old_q_probabilites)
+      if old_q_values is not None:
+        old_q_probabilites = jax.lax.stop_gradient(old_q_values)
         extra_args.append(old_q_probabilites)
       if old_state is not None:
         extra_args.append(old_state)
