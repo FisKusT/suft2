@@ -606,7 +606,8 @@ def train(
     rng, rng1, rng2 = jax.random.split(rng, num=3)
 
     # Use stored RNGs from action selection instead of generating new ones
-    batch_rngs = stored_network_rngs
+    # batch_rngs = stored_network_rngs
+    batch_rngs = jax.random.split(rng, num=states.shape[0])
 
     if match_online_target_rngs:
       target_rng = batch_rngs
