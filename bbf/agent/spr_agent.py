@@ -1174,7 +1174,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     """
     # TODO: Change this logging
     # TODO: Make this run parameters
-    logging.info("Distributional SUFT Target behavior Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
+    logging.info("Distributional SUFT Restored Target behavior Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
     logging.info("SUFT softmax_cross_entropy_loss_with_logits Loss")
     logging.info("SUFT Optimization Threshold < 1000")
     logging.info(
