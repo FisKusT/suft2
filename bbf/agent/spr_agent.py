@@ -732,8 +732,7 @@ def train(
       suft_loss = jnp.power((replay_chosen_current_q - replay_chosen_old_q), 2)
       # Mask SUFT
       mask_resets_equal = (old_network_resets.squeeze() == current_network_resets)
-      mask_optimization_range = (current_network_optimization_steps - old_network_optimization_steps.squeeze() < 1000)
-      mask_suft = mask_resets_equal & mask_optimization_range
+      mask_suft = mask_resets_equal 
       suft_loss = suft_loss * mask_suft
       loss = dqn_loss + spr_weight * spr_loss + suft_loss
       loss = loss_multipliers * loss
@@ -1172,8 +1171,8 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     # TODO: Change this logging
     # TODO: Make this run parameters
     logging.info("Target SUFT Added [Q_target_behavior(s,a) - Q_online_current(s,a)]")
-    logging.info("SUFT Huber Loss")
-    logging.info("SUFT Optimization Threshold < 1000")
+    logging.info("SUFT MSE Loss")
+    logging.info("SUFT Optimization no Threshold")
     logging.info(
         "Creating %s agent with the following parameters:",
         self.__class__.__name__,
