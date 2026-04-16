@@ -427,7 +427,7 @@ def select_action(
   rng, rng1, rng2, rng3 = jax.random.split(rng, num=4)
   p = jax.random.uniform(rng1, shape=(state.shape[0],))
   network_rngs = jax.random.split(rng2, state.shape[0])
-  q_values, probabilities = get_q_values_no_actions(q_online, state, network_rngs)
+  q_values, logits = get_q_values_no_actions(q_online, state, network_rngs)
 
   best_actions = jnp.argmax(q_values, axis=-1)
   new_actions = jnp.where(
@@ -440,13 +440,13 @@ def select_action(
       ),
       best_actions,
   )
-  return rng, new_actions, network_rngs, probabilities, state
+  return rng, new_actions, network_rngs, logits, state
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
 def get_q_values_no_actions(model, states, rng):
   results = model(states, actions=None, do_rollout=False, key=rng)[0]
-  return results.q_values, results.probabilities
+  return results.q_values, results.logits
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -720,19 +720,15 @@ def train(
         spr_loss = 0
 
       # if suft_lambda > 0:
-      # Logits_online_behavior(s,a)
-      old_q_probablities_for_suft = jnp.squeeze(old_q_values)
-      chosen_action_probablities_for_suft = jax.vmap(lambda x, y: x[y])(
-          old_q_probablities_for_suft, actions[:, 0]
-      )            
-      # Cross-entropy: old behavior distribution as target, current logits as predictions
-      suft_loss = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
-          chosen_action_probablities_for_suft, chosen_action_logits)
-      
-      # SUFT Square_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
-      # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Online action selection
-      # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online action selection
-      # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online logits action selection
+      # Target Logits SUFT [logits_target_behavior(s,a) - logits_online_current(s,a)]
+      # Logits_target(s,a)
+      _, current_logits = get_q_values_no_actions(q_online, old_state, batch_rngs)
+      current_logits_for_suft = jnp.squeeze(current_logits)
+      replay_chosen_current_logits = jax.vmap(lambda x, y: x[y])(current_logits_for_suft, actions[:, 0])
+      # Logits_behavior(s,a)
+      old_logits_values_for_suft = jnp.squeeze(old_q_values)
+      replay_chosen_old_q = jax.vmap(lambda x, y: x[y])(old_logits_values_for_suft, actions[:, 0])
+      suft_loss = jnp.mean(jnp.power((replay_chosen_current_logits - replay_chosen_old_q), 2), axis=-1)
       # Mask SUFT
       mask_resets_equal = (old_network_resets.squeeze() == current_network_resets)
       mask_optimization_range = (current_network_optimization_steps - old_network_optimization_steps.squeeze() < 1000)
@@ -1174,8 +1170,8 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     """
     # TODO: Change this logging
     # TODO: Make this run parameters
-    logging.info("Distributional SUFT Restored Target behavior Added [Q_probability_behavior(s,a) - Q_logits_current(s,a)]")
-    logging.info("SUFT softmax_cross_entropy_loss_with_logits Loss")
+    logging.info("Distributional Target SUFT Added [logits_target(s,a) - logits_behavior(s,a)]")
+    logging.info("SUFT MSE Loss")
     logging.info("SUFT Optimization Threshold < 1000")
     logging.info(
         "Creating %s agent with the following parameters:",
