@@ -427,7 +427,7 @@ def select_action(
   rng, rng1, rng2, rng3 = jax.random.split(rng, num=4)
   p = jax.random.uniform(rng1, shape=(state.shape[0],))
   network_rngs = jax.random.split(rng2, state.shape[0])
-  q_values, probabilities = get_q_values_no_actions(q_online, state, network_rngs)
+  q_values, probabilities, _ = get_q_values_no_actions(q_online, state, network_rngs)
 
   best_actions = jnp.argmax(q_values, axis=-1)
   new_actions = jnp.where(
@@ -446,7 +446,7 @@ def select_action(
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
 def get_q_values_no_actions(model, states, rng):
   results = model(states, actions=None, do_rollout=False, key=rng)[0]
-  return results.q_values, results.probabilities
+  return results.q_values, results.probabilities, results.logits
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -724,10 +724,19 @@ def train(
       old_q_probablities_for_suft = jnp.squeeze(old_q_values)
       chosen_action_probablities_for_suft = jax.vmap(lambda x, y: x[y])(
           old_q_probablities_for_suft, actions[:, 0]
+      )
+      _, _, logits_current = get_q_values_no_actions(
+          q_online, old_state, batch_rngs
+      )
+      logits_current_for_suft = jnp.squeeze(logits_current)
+      # Fetch the logits for its selected action. We use vmap to perform this
+      # indexing across the batch.
+      chosen_action_logits_for_suft = jax.vmap(lambda x, y: x[y])(
+          logits_current_for_suft, actions[:, 0]
       )            
       # Cross-entropy: old behavior distribution as target, current logits as predictions
       suft_loss = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
-          chosen_action_probablities_for_suft, chosen_action_logits)
+          chosen_action_probablities_for_suft, chosen_action_logits_for_suft)
       
       # SUFT Square_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
       # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Online action selection
