@@ -731,10 +731,16 @@ def train(
       # SUFT Huber_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
       suft_loss = jnp.power((replay_chosen_current_q - replay_chosen_old_q), 2)
       # Mask SUFT
+      step_delta = current_network_optimization_steps - old_network_optimization_steps.squeeze()
       mask_resets_equal = (old_network_resets.squeeze() == current_network_resets)
-      mask_optimization_range = (current_network_optimization_steps - old_network_optimization_steps.squeeze() < 1000)
+      mask_optimization_range = (step_delta < 1000)
       mask_suft = mask_resets_equal & mask_optimization_range
-      suft_loss = suft_loss * mask_suft
+      sample_multiplier = jnp.where(
+           step_delta > 0,
+           1.0 / jnp.square(step_delta.astype(jnp.float32)),
+           0.0
+           )
+      suft_loss = suft_loss * mask_suft * sample_multiplier
       loss = dqn_loss + spr_weight * spr_loss + suft_loss
       loss = loss_multipliers * loss
 
