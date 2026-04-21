@@ -452,7 +452,7 @@ def get_q_values_no_actions(model, states, rng):
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
 def get_logits(model, states, actions, do_rollout, rng):
   results = model(states, actions=actions, do_rollout=do_rollout, key=rng)[0]
-  return results.logits, results.latent, results.representation
+  return results.logits, results.latent, results.q_values
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -687,7 +687,7 @@ def train(
         )
 
       if distributional:
-        (logits, spr_predictions, _) = get_logits(
+        logits, spr_predictions, current_q_values = get_logits(
             q_online, current_state, actions[:, :-1], use_spr, batch_rngs
         )
         logits = jnp.squeeze(logits)
@@ -722,7 +722,6 @@ def train(
       # if suft_lambda > 0:
       # Target SUFT [Q_target_behavior(s,a) - Q_online_current(s,a)]
       # Q_target_behavior(s,a)
-      current_q_values = get_q_values_no_actions(q_online, old_state, batch_rngs)
       current_q_values_for_suft = jnp.squeeze(current_q_values)
       replay_chosen_current_q = jax.vmap(lambda x, y: x[y])(current_q_values_for_suft, actions[:, 0])
       # Q_online_current(s,a)
