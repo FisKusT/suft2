@@ -729,7 +729,13 @@ def train(
       old_q_values_for_suft = jnp.squeeze(old_q_values)
       replay_chosen_old_q = jax.vmap(lambda x, y: x[y])(old_q_values_for_suft, actions[:, 0])
       # SUFT Huber_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
-      suft_loss = jnp.power((replay_chosen_current_q - replay_chosen_old_q), 2)
+      suft_loss = jax.vmap(losses.huber_loss)(replay_chosen_current_q, replay_chosen_old_q)
+      # SUFT Square_loss[Q_target_behavior(s,a) - Q_online_current(s,a)] - Target action selection
+      # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Online action selection
+      # TODO: Online SUFT [Q_online_behavior(s,a) - Q_online_current(s,a)] - Target action selection
+      # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Target action selection
+      # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online action selection
+      # TODO: Distributional SUFT [Logits_online_behavior(s,a) - Logits_online_current(s,a)] - Online logits action selection
       # Mask SUFT
       mask_resets_equal = (old_network_resets.squeeze() == current_network_resets)
       mask_optimization_range = (current_network_optimization_steps - old_network_optimization_steps.squeeze() < 1000)
@@ -1172,7 +1178,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     # TODO: Change this logging
     # TODO: Make this run parameters
     logging.info("Target SUFT Added [Q_target_behavior(s,a) - Q_online_current(s,a)]")
-    logging.info("SUFT MSE Loss")
+    logging.info("SUFT Huber Loss")
     logging.info("SUFT Optimization Threshold < 1000")
     logging.info(
         "Creating %s agent with the following parameters:",
