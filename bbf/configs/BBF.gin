@@ -55,8 +55,6 @@ bbf.spr_networks.ImpalaCNN.num_blocks = 2
 # Note these parameters are from DER (van Hasselt et al, 2019)
 bbf.agent.spr_agent.create_scaling_optimizer.eps = 0.00015
 bbf.agent.spr_agent.create_scaling_optimizer.weight_decay = 0.1
-# Change Game Name
-DataEfficientAtariRunner.game_name = 'Kangaroo'
 # Atari 100K benchmark doesn't use sticky actions.
 atari_lib.create_atari_environment.sticky_actions = True
 AtariPreprocessing.terminal_on_life_loss = True
