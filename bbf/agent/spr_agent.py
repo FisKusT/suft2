@@ -1124,6 +1124,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       seed: int, a seed for Jax RNG and initialization.
       log_every: int, training steps between metric logging calls.
     """
+    logging.info("\t BBF Baseline")
     logging.info(
         "Creating %s agent with the following parameters:",
         self.__class__.__name__,
