@@ -969,24 +969,6 @@ class PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
         update_horizon=update_horizon,
         gamma=gamma,
     )
-    # transition_elements = self.get_transition_elements(batch_size)
-    # print("Transition elements: {}".format(transition_elements))
-    
-    # # Find the index position of 'indices' in transition_elements
-    # indices_position = None
-    # for i, elem in enumerate(transition_elements):
-    #     if elem.name == 'indices':
-    #         indices_position = i
-    #         print("Indices element from transition_elements: {}".format(elem))
-    #         break
-    
-    # if indices_position is not None and indices_position < len(transition):
-    #     print("Actual indices values (position {}): shape={}, dtype={}, values={}".format(
-    #         indices_position, transition[indices_position].shape, 
-    #         transition[indices_position].dtype, transition[indices_position]))
-    
-    # print("transition[-2]: {}".format(transition[-2]))
-    # print("transition[-(1 + len(self._extra_storage_types))]: {}".format(transition[-(1 + len(self._extra_storage_types))]))
     transition.append(self.get_priority(transition[-(1 + len(self._extra_storage_types))]))
     return transition
 
