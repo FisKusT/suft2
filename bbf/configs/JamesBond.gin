@@ -1,3 +1,0 @@
-include 'bbf/configs/BBF.gin'
-
-DataEfficientAtariRunner.game_name = 'JamesBond'
