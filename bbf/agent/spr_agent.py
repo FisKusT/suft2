@@ -1813,7 +1813,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           action,
           reward,
           is_terminal,
-          *args,
+          *extra_args,
           priority=priority,
           episode_end=episode_end,
       )
