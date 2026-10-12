@@ -3,8 +3,6 @@
 #SBATCH --partition=shaham-L40
 #SBATCH --gres=gpu:1
 #SBATCH --mem=100G
-#SBATCH --mail-user=fiskust@biu.ac.il
-#SBATCH --mail-type=END
 
 # Baseline: a single BBF run on one Atari game (Atari 100k)
 #
