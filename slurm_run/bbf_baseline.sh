@@ -8,7 +8,19 @@
 #
 # Usage: sbatch bbf_baseline.sh <Game> <run_number>     e.g. sbatch bbf_baseline.sh Alien 0
 # <Game> is the name of the gin config in bbf/configs (Alien, KungFuMaster, ...)
-# To submit many games / runs at once use submit_bbf_baseline.sh
+# To submit many games / runs at once as a job array use submit_bbf_baseline.sh
+
+# In a job array the arguments are <Game>:<run_number> pairs and each task runs
+# the pair at index $SLURM_ARRAY_TASK_ID
+if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
+  TASKS=("$@")
+  TASK=${TASKS[$SLURM_ARRAY_TASK_ID]}
+  if [ -z "$TASK" ]; then
+    echo "No task for array index $SLURM_ARRAY_TASK_ID ($# tasks given)" >&2
+    exit 1
+  fi
+  set -- "${TASK%%:*}" "${TASK#*:}"
+fi
 
 GAME=$1
 RUN_NUMBER=$2
