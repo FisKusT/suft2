@@ -1076,8 +1076,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       epsilon_fn: function expecting 4 parameters: (decay_period, step,
         warmup_steps, epsilon). This function should return the epsilon value
         used for exploration during training.
-      replay_scheme: str, 'prioritized' or 'uniform', the sampling scheme of the
-        replay memory.
+      replay_scheme: str, 'prioritized', 'uniform' or 'short_long', the
+        sampling scheme of the replay memory. 'short_long' samples a uniform
+        short term buffer of recent transitions and a prioritized long term
+        buffer of older ones.
       replay_type: str, 'deterministic' or 'regular', specifies the type of
         replay buffer to create.
       reset_every: int, how many training steps between resets. 0 to disable.
@@ -1341,11 +1343,21 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
   def _build_replay_buffer(self):
     """Creates the replay buffer used by the agent."""
-    if self._replay_scheme not in ["uniform", "prioritized"]:
+    if self._replay_scheme not in ["uniform", "prioritized", "short_long"]:
       raise ValueError("Invalid replay scheme: {}".format(self._replay_scheme))
     if self._replay_type not in ["deterministic"]:
       raise ValueError("Invalid replay type: {}".format(self._replay_type))
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme == "short_long":
+      buffer = subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
+          observation_shape=self.observation_shape,
+          stack_size=self.stack_size,
+          update_horizon=self.max_update_horizon,
+          gamma=self.gamma,
+          subseq_len=self._jumps + 1,
+          batch_size=self._batch_size,
+          observation_dtype=self.observation_dtype,
+      )
+    elif self._replay_scheme == "prioritized":
       buffer = subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
           observation_shape=self.observation_shape,
           stack_size=self.stack_size,
@@ -1560,15 +1572,23 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
     if not hasattr(self, "replay_elements"):
       self._sample_from_replay_buffer()
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme in ("prioritized", "short_long"):
       # The original prioritized experience replay uses a linear exponent
       # schedule 0.4 -> 1.0. Comparing the schedule to a fixed exponent of
       # 0.5 on 5 games (Asterix, Pong, Q*Bert, Seaquest, Space Invaders)
       # suggested a fixed exponent actually performs better, except on Pong.
       probs = self.replay_elements["sampling_probabilities"]
       # Weight the loss by the inverse priorities.
-      loss_weights = 1.0 / onp.sqrt(probs + 1e-10)
-      loss_weights /= onp.max(loss_weights)
+      loss_weights = onp.array(1.0 / onp.sqrt(probs + 1e-10))
+      if self._replay_scheme == "short_long":
+        # Short term samples are drawn uniformly, so they keep a weight of 1;
+        # only the long term ones are normalized as in prioritized replay.
+        is_short = onp.asarray(self.replay_elements["is_short"])
+        if not is_short.all():
+          loss_weights /= onp.max(loss_weights[~is_short])
+        loss_weights[is_short] = 1.0
+      else:
+        loss_weights /= onp.max(loss_weights)
       indices = self.replay_elements["indices"]
     else:
       # Uniform weights if not using prioritized replay.
@@ -1643,7 +1663,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     sample_time = time.time() - sample_start
 
     prio_set_start = time.time()
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme in ("prioritized", "short_long"):
       # Rainbow and prioritized replay are parametrized by an exponent
       # alpha, but in both cases it is set to 0.5 - for simplicity's sake we
       # leave it as is here, using the more direct sqrt(). Taking the square

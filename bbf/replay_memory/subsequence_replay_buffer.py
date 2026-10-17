@@ -997,3 +997,254 @@ class PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
 
   def reset_priorities(self):
     self.sum_tree.reset_priorities()
+
+
+@gin.configurable
+class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
+    PrioritizedJaxSubsequenceParallelEnvReplayBuffer):
+  """Replay buffer made of a short term memory and a long term memory.
+
+  The short term buffer holds the `short_term_buffer_size` most recent
+  transitions and is sampled uniformly. Once a transition is pushed out of it,
+  it enters the long term buffer (the rest of `replay_capacity`), which is
+  sampled with prioritized replay as in BBF.
+
+  Both buffers share the same storage: the short term buffer is the window of
+  the most recent indices behind the cursor. Its transitions have a zero
+  priority in the sum tree, so they are only reachable by the uniform sampler.
+  When a transition leaves the window it is given the max recorded priority,
+  like a new transition in the prioritized replay buffer.
+  """
+
+  def __init__(self,
+               observation_shape,
+               stack_size,
+               replay_capacity,
+               batch_size,
+               update_horizon=1,
+               subseq_len=0,
+               n_envs=1,
+               gamma=0.99,
+               max_sample_attempts=1000,
+               extra_storage_types=None,
+               observation_dtype=np.uint8,
+               terminal_dtype=np.uint8,
+               action_shape=(),
+               action_dtype=np.int32,
+               reward_shape=(),
+               reward_dtype=np.float32,
+               short_term_buffer_size=4000,
+               sampling_fraction=0.5):
+    """Initializes the buffer.
+
+    Args:
+      short_term_buffer_size: int, number of transitions in the short term
+        buffer. The long term buffer holds the remaining
+        `replay_capacity - short_term_buffer_size` transitions.
+      sampling_fraction: float, fraction of each batch taken from the short
+        term buffer. The whole batch is taken from it as long as the long term
+        buffer does not have enough transitions.
+      Other args: see `PrioritizedJaxSubsequenceParallelEnvReplayBuffer`.
+    """
+    super().__init__(
+        observation_shape=observation_shape,
+        stack_size=stack_size,
+        replay_capacity=replay_capacity,
+        batch_size=batch_size,
+        update_horizon=update_horizon,
+        subseq_len=subseq_len,
+        n_envs=n_envs,
+        gamma=gamma,
+        max_sample_attempts=max_sample_attempts,
+        extra_storage_types=extra_storage_types,
+        observation_dtype=observation_dtype,
+        terminal_dtype=terminal_dtype,
+        action_shape=action_shape,
+        action_dtype=action_dtype,
+        reward_shape=reward_shape,
+        reward_dtype=reward_dtype)
+    self._short_length = int(short_term_buffer_size // self._n_envs)
+    if not 0 < self._short_length < self._replay_length:
+      raise ValueError('short_term_buffer_size must be positive and smaller '
+                       'than replay_capacity.')
+    self._sampling_fraction = sampling_fraction
+    self._last_is_short = np.zeros((0,), dtype=bool)
+    logging.info('\t short_term_buffer_size: %d', short_term_buffer_size)
+    logging.info('\t sampling_fraction: %f', sampling_fraction)
+
+  def _num_short(self):
+    """Number of transitions per environment in the short term buffer."""
+    return min(int(self.add_count), self._short_length)
+
+  def _num_long(self):
+    """Number of transitions per environment in the long term buffer."""
+    return min(int(self.add_count), self._replay_length) - self._num_short()
+
+  def _in_short_window(self, t_indices):
+    """Whether each time index belongs to the short term buffer."""
+    # 1 for the newest transition, replay_length for the oldest one.
+    age = (self.cursor() - np.asarray(t_indices) - 1) % self._replay_length + 1
+    return age <= self._num_short()
+
+  def _add(self, *args):
+    """Adds a transition to the short term buffer.
+
+    The oldest short term transition moves to the long term buffer.
+    """
+    self._check_args_length(*args)
+    # The priority argument is ignored: new transitions start in the short term
+    # buffer, whose transitions are kept out of the sum tree.
+    transition = {
+        e.name: args[i]
+        for i, e in enumerate(self.get_add_args_signature())
+        if e.name != 'priority'
+    }
+
+    cursor = self.cursor()
+    env_indices = np.arange(self._n_envs)
+    for index in self.ravel_indices(
+        np.full(self._n_envs, cursor), env_indices):
+      self.sum_tree.set(index, 0.0)
+    if self.add_count >= self._short_length:
+      oldest_short = (cursor - self._short_length) % self._replay_length
+      for index in self.ravel_indices(
+          np.full(self._n_envs, oldest_short), env_indices):
+        self.sum_tree.set(index, self.sum_tree.max_recorded_priority)
+    self._add_transition(transition)
+
+  def _draw_short(self, batch_size):
+    """Draws flat indices uniformly from the short term buffer."""
+    self._rng, rng_t, rng_b = jax.random.split(self._rng, 3)
+    # Absolute positions; the newest transition is at add_count - 1.
+    min_id = int(self.add_count) - self._num_short()
+    max_id = int(self.add_count) - self._update_horizon - self._subseq_len
+    if not self.is_full():
+      # The first few indices contain the padding states of the first episode.
+      min_id = max(min_id, self._stack_size - 1)
+    if max_id <= min_id:
+      raise RuntimeError('Not enough transitions in the short term buffer.')
+    t_indices = np.asarray(
+        jax.random.randint(rng_t, (batch_size,), min_id, max_id)
+    ) % self._replay_length
+    b_indices = np.asarray(
+        jax.random.randint(rng_b, (batch_size,), 0, self._n_envs))
+    return self.ravel_indices(t_indices, b_indices)
+
+  def _draw_long(self, batch_size):
+    """Draws flat indices from the long term buffer, as in Schaul et al."""
+    self._rng, rng = jax.random.split(self._rng)
+    return np.asarray(self.sum_tree.stratified_sample(batch_size, rng))
+
+  def _sample_valid_indices(self, batch_size, draw, from_short):
+    """Draws `batch_size` valid indices from one of the two buffers.
+
+    Draws that are not valid transitions or that fall in the other buffer are
+    redrawn one at a time (so the redraws are not stratified).
+    """
+    if batch_size == 0:
+      empty = np.zeros((0,), dtype=np.int64)
+      return empty, empty, empty
+    t_indices, b_indices = self.unravel_indices(draw(batch_size))  # pylint: disable=unbalanced-tuple-unpacking
+    t_indices, b_indices = np.array(t_indices), np.array(b_indices)
+    censor_before = np.zeros_like(t_indices)
+    allowed_attempts = self._max_sample_attempts
+    for i in range(batch_size):
+      while True:
+        is_valid, ep_start = self.is_valid_transition(t_indices[i:i + 1],
+                                                      b_indices[i:i + 1])
+        if is_valid and self._in_short_window(t_indices[i]) == from_short:
+          break
+        if allowed_attempts == 0:
+          raise RuntimeError(
+              'Max sample attempts: Tried {} times but only sampled {}'
+              ' valid indices. Batch size is {}'.format(
+                  self._max_sample_attempts, i, batch_size))
+        allowed_attempts -= 1
+        t_index, b_index = self.unravel_indices(draw(1))  # pylint: disable=unbalanced-tuple-unpacking
+        t_indices[i:i + 1] = t_index
+        b_indices[i:i + 1] = b_index
+      censor_before[i:i + 1] = ep_start
+    return t_indices, b_indices, censor_before
+
+  def sample_index_batch(self, batch_size):
+    """Returns a batch of valid indices from the short and long term buffers.
+
+    The batch is split into chunks of the configured batch size (one per
+    gradient step when batches are grouped), each with its own share of short
+    and long term samples: first the long term ones, then the short term ones.
+    """
+    if batch_size % self._batch_size == 0:
+      num_chunks = batch_size // self._batch_size
+    else:
+      num_chunks = 1
+    chunk_size = batch_size // num_chunks
+    short_per_chunk = int(round(chunk_size * self._sampling_fraction))
+    long_per_chunk = chunk_size - short_per_chunk
+    if self._num_long() * self._n_envs < long_per_chunk * num_chunks:
+      # Not enough samples in the long term buffer yet: take everything from
+      # the short term buffer.
+      short_per_chunk, long_per_chunk = chunk_size, 0
+
+    long_samples = self._sample_valid_indices(
+        long_per_chunk * num_chunks, self._draw_long, from_short=False)
+    short_samples = self._sample_valid_indices(
+        short_per_chunk * num_chunks, self._draw_short, from_short=True)
+
+    def merge_chunks(long_part, short_part):
+      return np.concatenate(
+          [long_part.reshape(num_chunks, -1),
+           short_part.reshape(num_chunks, -1)], axis=1).reshape(-1)
+
+    t_indices, b_indices, censor_before = (
+        merge_chunks(long_part, short_part)
+        for long_part, short_part in zip(long_samples, short_samples))
+    self._last_is_short = merge_chunks(
+        np.zeros(long_per_chunk * num_chunks, dtype=bool),
+        np.ones(short_per_chunk * num_chunks, dtype=bool))
+    return t_indices, b_indices, censor_before
+
+  def sample_transition_batch(
+      self,
+      rng,
+      batch_size=None,
+      indices=None,
+      subseq_len=None,
+      update_horizon=None,
+      gamma=None,
+  ):
+    """Returns a batch of transitions, the priorities and the short term mask."""
+    transition = super().sample_transition_batch(
+        rng,
+        batch_size,
+        indices,
+        subseq_len=subseq_len,
+        update_horizon=update_horizon,
+        gamma=gamma,
+    )
+    transition.append(self._last_is_short)
+    return transition
+
+  def get_transition_elements(self, batch_size=None):
+    """Returns a 'type signature' for sample_transition_batch."""
+    return super().get_transition_elements(batch_size) + [
+        ReplayElement('is_short', (batch_size,), np.bool_)
+    ]
+
+  def set_priority(self, indices, priorities):
+    """Sets the priority of the given long term elements.
+
+    Short term elements are skipped, so they stay out of the sum tree.
+    """
+    assert indices.dtype == np.int32, ('Indices must be integers, '
+                                       'given: {}'.format(indices.dtype))
+    t_indices, _ = self.unravel_indices(indices)  # pylint: disable=unbalanced-tuple-unpacking
+    is_short = self._in_short_window(t_indices)
+    for index, short, priority in zip(indices, is_short, priorities):
+      if not short:
+        self.sum_tree.set(index, priority)
+
+  def reset_priorities(self):
+    indices = np.arange(self.sum_tree.highest_set)
+    t_indices, _ = self.unravel_indices(indices)  # pylint: disable=unbalanced-tuple-unpacking
+    for index in indices[~self._in_short_window(t_indices)]:
+      self.sum_tree.set(index, self.sum_tree.max_recorded_priority)

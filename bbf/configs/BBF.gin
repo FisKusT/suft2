@@ -36,7 +36,7 @@ BBFAgent.batch_size = 32
 BBFAgent.spr_weight = 5
 BBFAgent.jumps = 5
 BBFAgent.data_augmentation = True
-BBFAgent.replay_scheme = 'prioritized'
+BBFAgent.replay_scheme = 'short_long'    # 'prioritized' (BBF), 'uniform' or 'short_long' (see the short/long buffer settings below)
 BBFAgent.half_precision = False
 BBFAgent.network    = @bbf.spr_networks.RainbowDQNNetwork
 BBFAgent.epsilon_fn = @jax.agents.dqn.dqn_agent.linearly_decaying_epsilon
@@ -70,3 +70,11 @@ bbf.replay_memory.subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnv
 bbf.replay_memory.subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnvReplayBuffer.n_envs = 1    # agent episodes
 bbf.replay_memory.subsequence_replay_buffer.JaxSubsequenceParallelEnvReplayBuffer.replay_capacity = 200000
 bbf.replay_memory.subsequence_replay_buffer.JaxSubsequenceParallelEnvReplayBuffer.n_envs = 1    # agent episodes
+# Short/long term replay buffer, used with BBFAgent.replay_scheme = 'short_long'
+# The short term buffer (the most recent transitions) is sampled uniformly and the long term
+# buffer (the remaining replay_capacity - short_term_buffer_size transitions) with prioritized replay
+# sampling_fraction is the fraction of each batch taken from the short term buffer
+bbf.replay_memory.subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer.replay_capacity = 200000
+bbf.replay_memory.subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer.n_envs = 1    # agent episodes
+bbf.replay_memory.subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer.short_term_buffer_size = 4000
+bbf.replay_memory.subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer.sampling_fraction = 0.5
