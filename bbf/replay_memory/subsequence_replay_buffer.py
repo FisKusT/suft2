@@ -1014,6 +1014,10 @@ class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
   priority in the sum tree, so they are only reachable by the uniform sampler.
   When a transition leaves the window it is given the max recorded priority,
   like a new transition in the prioritized replay buffer.
+
+  `flush_short_term()` (called by the agent at every network reset) moves the
+  whole short term buffer into the long term buffer, so the short term buffer
+  then refills with the transitions collected after the reset.
   """
 
   def __init__(self,
@@ -1042,8 +1046,10 @@ class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
         buffer. The long term buffer holds the remaining
         `replay_capacity - short_term_buffer_size` transitions.
       sampling_fraction: float, fraction of each batch taken from the short
-        term buffer. The whole batch is taken from it as long as the long term
-        buffer does not have enough transitions.
+        term buffer. The whole batch is taken from the long term buffer as
+        long as the short term buffer does not have enough transitions to
+        sample from (e.g. right after a flush), and from the short term buffer
+        as long as the long term buffer does not have enough transitions.
       Other args: see `PrioritizedJaxSubsequenceParallelEnvReplayBuffer`.
     """
     super().__init__(
@@ -1069,12 +1075,15 @@ class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
                        'than replay_capacity.')
     self._sampling_fraction = sampling_fraction
     self._last_is_short = np.zeros((0,), dtype=bool)
+    # add_count when the short term buffer was last flushed: it only holds the
+    # transitions added since then.
+    self.short_term_start = 0
     logging.info('\t short_term_buffer_size: %d', short_term_buffer_size)
     logging.info('\t sampling_fraction: %f', sampling_fraction)
 
   def _num_short(self):
     """Number of transitions per environment in the short term buffer."""
-    return min(int(self.add_count), self._short_length)
+    return min(int(self.add_count) - self.short_term_start, self._short_length)
 
   def _num_long(self):
     """Number of transitions per environment in the long term buffer."""
@@ -1105,22 +1114,52 @@ class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
     for index in self.ravel_indices(
         np.full(self._n_envs, cursor), env_indices):
       self.sum_tree.set(index, 0.0)
-    if self.add_count >= self._short_length:
+    if self._num_short() == self._short_length:
       oldest_short = (cursor - self._short_length) % self._replay_length
       for index in self.ravel_indices(
           np.full(self._n_envs, oldest_short), env_indices):
         self.sum_tree.set(index, self.sum_tree.max_recorded_priority)
     self._add_transition(transition)
 
-  def _draw_short(self, batch_size):
-    """Draws flat indices uniformly from the short term buffer."""
-    self._rng, rng_t, rng_b = jax.random.split(self._rng, 3)
-    # Absolute positions; the newest transition is at add_count - 1.
+  def flush_short_term(self):
+    """Moves every short term transition to the long term buffer.
+
+    They enter it with the max recorded priority, like a transition leaving
+    the short term window, and the short term buffer starts empty.
+    """
+    num_short = self._num_short()
+    ages = np.arange(1, num_short + 1)
+    t_indices = (self.cursor() - ages) % self._replay_length
+    for b_index in range(self._n_envs):
+      for index in self.ravel_indices(
+          t_indices, np.full(num_short, b_index)):
+        self.sum_tree.set(index, self.sum_tree.max_recorded_priority)
+    self.short_term_start = int(self.add_count)
+    logging.info('\t Flushed %d transitions from the short term buffer into '
+                 'the long term buffer.', num_short * self._n_envs)
+
+  def _short_id_range(self):
+    """Absolute [min, max) time positions the short term sampler draws from.
+
+    The newest transition is at add_count - 1, and the last
+    update_horizon + subseq_len transitions don't have enough future steps yet.
+    """
     min_id = int(self.add_count) - self._num_short()
     max_id = int(self.add_count) - self._update_horizon - self._subseq_len
     if not self.is_full():
       # The first few indices contain the padding states of the first episode.
       min_id = max(min_id, self._stack_size - 1)
+    return min_id, max_id
+
+  def _num_short_sampleable(self):
+    """Number of short term positions per environment the sampler can draw."""
+    min_id, max_id = self._short_id_range()
+    return max(0, max_id - min_id)
+
+  def _draw_short(self, batch_size):
+    """Draws flat indices uniformly from the short term buffer."""
+    self._rng, rng_t, rng_b = jax.random.split(self._rng, 3)
+    min_id, max_id = self._short_id_range()
     if max_id <= min_id:
       raise RuntimeError('Not enough transitions in the short term buffer.')
     t_indices = np.asarray(
@@ -1180,7 +1219,12 @@ class ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
     chunk_size = batch_size // num_chunks
     short_per_chunk = int(round(chunk_size * self._sampling_fraction))
     long_per_chunk = chunk_size - short_per_chunk
-    if self._num_long() * self._n_envs < long_per_chunk * num_chunks:
+    if (self._num_short_sampleable() * self._n_envs
+        < short_per_chunk * num_chunks):
+      # Not enough samples in the short term buffer (it is refilling after a
+      # flush): take everything from the long term buffer.
+      short_per_chunk, long_per_chunk = 0, chunk_size
+    elif self._num_long() * self._n_envs < long_per_chunk * num_chunks:
       # Not enough samples in the long term buffer yet: take everything from
       # the short term buffer.
       short_per_chunk, long_per_chunk = chunk_size, 0

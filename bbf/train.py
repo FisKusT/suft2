@@ -152,7 +152,7 @@ def print_replay_config(base_dir, run_number):
   replay_ratio = query_gin('BBFAgent.replay_ratio')
   batch_size = query_gin('BBFAgent.batch_size')
   # Replay ratio in gradient updates per env step, as in the BBF paper
-  rr = max(1, replay_ratio // batch_size)
+  rr = replay_ratio / batch_size
 
   print('=' * 80)
   if replay_scheme == 'short_long':
@@ -168,11 +168,14 @@ def print_replay_config(base_dir, run_number):
           'sampled with prioritized replay')
     print(f'  sampling fraction:   {sampling_fraction} of each batch from the '
           'short term buffer')
+    print('  short term flush:    at every network reset (reset_every '
+          f'{query_gin("BBFAgent.reset_every")}), the short term buffer is '
+          'moved into the long term buffer')
   else:
     print(f'BBF with replay_scheme={replay_scheme} (from the gin configs)')
     print(f'  game:                {query_gin("DataEfficientAtariRunner.game_name")}')
     print(f'  run number:          {run_number}')
-  print(f'  replay ratio:        {rr} (gin replay_ratio {replay_ratio}, '
+  print(f'  replay ratio:        {rr:g} (gin replay_ratio {replay_ratio}, '
         f'batch size {batch_size})')
   print(f'  base dir:            {base_dir}')
   print('=' * 80)

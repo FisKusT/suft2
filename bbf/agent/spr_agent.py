@@ -1514,6 +1514,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
     if self.reset_priorities:
       self._replay.reset_priorities()
+    if self._replay_scheme == "short_long":
+      # The short term buffer restarts empty, holding only the transitions
+      # collected by the reset network.
+      self._replay.flush_short_term()
     (
         self.online_params,
         self.target_network_params,
