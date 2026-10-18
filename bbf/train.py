@@ -136,6 +136,50 @@ def write_config(base_dir, seed, tag, agent):
   return clean_cfg
 
 
+def query_gin(name, default=None):
+  """Returns the value bound to a gin parameter, or `default` if it is unset."""
+  try:
+    return gin.query_parameter(name)
+  except ValueError:
+    return default
+
+
+def print_replay_config(base_dir, run_number):
+  """Prints the replay buffer configuration of the current training run."""
+  buffer_prefix = ('bbf.replay_memory.subsequence_replay_buffer.'
+                   'ShortLongTermJaxSubsequenceParallelEnvReplayBuffer.')
+  replay_scheme = query_gin('BBFAgent.replay_scheme')
+  replay_ratio = query_gin('BBFAgent.replay_ratio')
+  batch_size = query_gin('BBFAgent.batch_size')
+  # Replay ratio in gradient updates per env step, as in the BBF paper
+  rr = replay_ratio / batch_size
+
+  print('=' * 80)
+  if replay_scheme == 'short_long':
+    replay_capacity = query_gin(buffer_prefix + 'replay_capacity')
+    short_size = query_gin(buffer_prefix + 'short_term_buffer_size')
+    sampling_fraction = query_gin(buffer_prefix + 'sampling_fraction')
+    print('SF-Q with the SHORT/LONG TERM REPLAY BUFFER '
+          f'(replay_scheme={replay_scheme}, from the gin configs)')
+    print(f'  game:                {query_gin("DataEfficientAtariRunner.game_name")}')
+    print(f'  run number:          {run_number}')
+    print(f'  short term buffer:   {short_size} transitions, sampled uniformly')
+    print(f'  long term buffer:    {replay_capacity - short_size} transitions, '
+          'sampled with prioritized replay')
+    print(f'  sampling fraction:   {sampling_fraction} of each batch from the '
+          'short term buffer')
+    print('  SUFT loss:           added only to the short term buffer samples')
+  else:
+    print(f'SF-Q with replay_scheme={replay_scheme} (from the gin configs)')
+    print(f'  game:                {query_gin("DataEfficientAtariRunner.game_name")}')
+    print(f'  run number:          {run_number}')
+    print('  SUFT loss:           added to every sample')
+  print(f'  replay ratio:        {rr:g} (gin replay_ratio {replay_ratio}, '
+        f'batch size {batch_size})')
+  print(f'  base dir:            {base_dir}')
+  print('=' * 80)
+
+
 def create_load_replay_dir(xm_params):
   """Creates the directory for loading fixed replay data."""
   problem_name, run_number = '', ''
@@ -253,6 +297,7 @@ def main(unused_argv):
   print('=' * 80)
   
   run_experiment.load_gin_configs(gin_files, gin_bindings)
+  print_replay_config(base_dir, FLAGS.run_number)
 
   write_config(base_dir, seed, FLAGS.tag, FLAGS.agent)
 

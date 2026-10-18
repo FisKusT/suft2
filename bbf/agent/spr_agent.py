@@ -515,10 +515,7 @@ def train(
     target_eval_mode,  # 27, static
     network_rngs,  # 28
     old_q_values,  # 29
-    old_network_resets,  # 30
-    old_network_optimization_steps,  # 31
-    current_network_resets,  # 32
-    current_network_optimization_steps,  # 33
+    suft_mask,  # 30
   ):
   """Run one or more training steps for BBF.
 
@@ -559,10 +556,8 @@ def train(
       dropout).
     network_rngs: Stored RNG keys from action selection, (B, T, 2).
     old_q_values: Q-values from action selection, (B, T, num_actions).
-    old_network_resets: Network resets from action selection, (B, T).
-    old_network_optimization_steps: Network optimization steps from action selection, (B, T).
-    current_network_resets: Current network resets - scalar.
-    current_network_optimization_steps: Current network optimization steps - scalar.
+    suft_mask: 1 for the samples the SUFT loss is added to (the short term
+      buffer samples), 0 otherwise, (B,).
 
   Returns:
     Updated online params, target params, optimizer state, dynamic scale,
@@ -594,8 +589,7 @@ def train(
         cumulative_gamma,
         stored_network_rngs,
         old_q_values,
-        old_network_resets,
-        old_network_optimization_steps,
+        suft_mask,
     ) = inputs
     same_traj_mask = same_traj_mask[:, 1:]
     rewards = rewards[:, 0]
@@ -603,8 +597,6 @@ def train(
     cumulative_gamma = cumulative_gamma[:, 0]
     stored_network_rngs = stored_network_rngs[:, 0]  # Use RNGs from first timestep
     old_q_values = old_q_values[:, 0]
-    old_network_resets = old_network_resets[:, 0]
-    old_network_optimization_steps = old_network_optimization_steps[:, 0]
 
     rng, rng1, rng2 = jax.random.split(rng, num=3)
     states = spr_networks.process_inputs(
@@ -704,11 +696,10 @@ def train(
         suft_loss = jnp.square(
             chosen_action_current_q_values - chosen_action_old_q_values
         )
-        # Mask SUFT indicator
-        mask_resets_equal = (old_network_resets.squeeze() == current_network_resets)
-        mask_optimization_range = (current_network_optimization_steps - old_network_optimization_steps.squeeze() < 1000)
-        mask_suft = mask_resets_equal & mask_optimization_range
-        suft_loss = suft_loss * mask_suft
+        # SUFT is added only to the short term buffer samples. The mean loss
+        # below still divides by all the samples, so every sample keeps the
+        # same weight in the loss.
+        suft_loss = suft_loss * suft_mask
       else:
         q_values, spr_predictions, _ = get_q_values(
             q_online, current_state, actions[:, :-1], use_spr, batch_rngs
@@ -741,6 +732,7 @@ def train(
           "DQNLoss": jnp.mean(dqn_loss),
           "TD Error": jnp.mean(td_error),
           "SPRLoss": jnp.mean(spr_loss),
+          "SUFTLoss": jnp.mean(suft_loss),
       }
 
       return mean_loss, (aux_losses)
@@ -867,8 +859,7 @@ def train(
       ),
       network_rngs.reshape(num_batches, batch_size, *network_rngs.shape[1:]),
       old_q_values.reshape(num_batches, batch_size, *old_q_values.shape[1:]),
-      old_network_resets.reshape(num_batches, batch_size, *old_network_resets.shape[1:]),
-      old_network_optimization_steps.reshape(num_batches, batch_size, *old_network_optimization_steps.shape[1:]),
+      suft_mask.reshape(num_batches, batch_size, *suft_mask.shape[1:]),
   )
 
   (
@@ -1116,8 +1107,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       epsilon_fn: function expecting 4 parameters: (decay_period, step,
         warmup_steps, epsilon). This function should return the epsilon value
         used for exploration during training.
-      replay_scheme: str, 'prioritized' or 'uniform', the sampling scheme of the
-        replay memory.
+      replay_scheme: str, 'prioritized', 'uniform' or 'short_long', the
+        sampling scheme of the replay memory. 'short_long' samples a uniform
+        short term buffer of recent transitions and a prioritized long term
+        buffer of older ones.
       replay_type: str, 'deterministic' or 'regular', specifies the type of
         replay buffer to create.
       reset_every: int, how many training steps between resets. 0 to disable.
@@ -1381,7 +1374,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
   def _build_replay_buffer(self):
     """Creates the replay buffer used by the agent."""
-    if self._replay_scheme not in ["uniform", "prioritized"]:
+    if self._replay_scheme not in ["uniform", "prioritized", "short_long"]:
       raise ValueError("Invalid replay scheme: {}".format(self._replay_scheme))
     if self._replay_type not in ["deterministic"]:
       raise ValueError("Invalid replay type: {}".format(self._replay_type))
@@ -1392,7 +1385,18 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         ReplayElement('old_network_resets', (1,), jnp.uint32),
         ReplayElement('old_network_optimization_steps', (1,), jnp.uint32),
     ]
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme == "short_long":
+      buffer = subsequence_replay_buffer.ShortLongTermJaxSubsequenceParallelEnvReplayBuffer(
+          observation_shape=self.observation_shape,
+          stack_size=self.stack_size,
+          update_horizon=self.max_update_horizon,
+          gamma=self.gamma,
+          subseq_len=self._jumps + 1,
+          batch_size=self._batch_size,
+          observation_dtype=self.observation_dtype,
+          extra_storage_types=extra_storage_types,
+      )
+    elif self._replay_scheme == "prioritized":
       buffer = subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
           observation_shape=self.observation_shape,
           stack_size=self.stack_size,
@@ -1609,19 +1613,34 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
     if not hasattr(self, "replay_elements"):
       self._sample_from_replay_buffer()
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme in ("prioritized", "short_long"):
       # The original prioritized experience replay uses a linear exponent
       # schedule 0.4 -> 1.0. Comparing the schedule to a fixed exponent of
       # 0.5 on 5 games (Asterix, Pong, Q*Bert, Seaquest, Space Invaders)
       # suggested a fixed exponent actually performs better, except on Pong.
       probs = self.replay_elements["sampling_probabilities"]
       # Weight the loss by the inverse priorities.
-      loss_weights = 1.0 / onp.sqrt(probs + 1e-10)
-      loss_weights /= onp.max(loss_weights)
+      loss_weights = onp.array(1.0 / onp.sqrt(probs + 1e-10))
+      if self._replay_scheme == "short_long":
+        # Short term samples are drawn uniformly, so they keep a weight of 1;
+        # only the long term ones are normalized as in prioritized replay.
+        is_short = onp.asarray(self.replay_elements["is_short"])
+        if not is_short.all():
+          loss_weights /= onp.max(loss_weights[~is_short])
+        loss_weights[is_short] = 1.0
+      else:
+        loss_weights /= onp.max(loss_weights)
       indices = self.replay_elements["indices"]
     else:
       # Uniform weights if not using prioritized replay.
       loss_weights = onp.ones(self.replay_elements["state"].shape[0:2])
+
+    if self._replay_scheme == "short_long":
+      # The SUFT loss is added only to the short term buffer samples.
+      suft_mask = onp.asarray(self.replay_elements["is_short"], dtype=onp.float32)
+    else:
+      # Without a short term buffer the SUFT loss is added to every sample.
+      suft_mask = onp.ones(self.replay_elements["state"].shape[0], dtype=onp.float32)
 
     if self.log_churn and should_log:
       eval_batch = self.sample_eval_batch(256)
@@ -1684,10 +1703,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.target_eval_mode,
         self.replay_elements["network_rngs"],
         self.replay_elements["old_q_values"],
-        self.replay_elements["old_network_resets"],
-        self.replay_elements["old_network_optimization_steps"],
-        self.cumulative_resets,
-        self.cycle_grad_steps,
+        suft_mask,
     )
     self.grad_steps += self._batches_to_group
     self.cycle_grad_steps += self._batches_to_group
@@ -1698,7 +1714,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     sample_time = time.time() - sample_start
 
     prio_set_start = time.time()
-    if self._replay_scheme == "prioritized":
+    if self._replay_scheme in ("prioritized", "short_long"):
       # Rainbow and prioritized replay are parametrized by an exponent
       # alpha, but in both cases it is set to 0.5 - for simplicity's sake we
       # leave it as is here, using the more direct sqrt(). Taking the square
