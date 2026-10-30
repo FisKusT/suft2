@@ -1,12 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=bbf_sl
+#SBATCH --job-name=sfq_sl
 #SBATCH --partition=shaham-L40
 #SBATCH --gres=gpu:1
 #SBATCH --mem=100G
 
-# BBF with the short/long term replay buffer: a single run on one Atari game (Atari 100k)
+# SF-Q with the short/long term replay buffer: a single run on one Atari game (Atari 100k)
 # The short term buffer (most recent transitions) is sampled uniformly and the long term
 # buffer (the rest of the replay capacity) is sampled with BBF's prioritized replay
+# The SUFT loss is added only to the short term buffer samples
 #
 # Usage: sbatch bbf_short_long.sh <Game> <run_number>     e.g. sbatch bbf_short_long.sh Alien 0
 # <Game> is the name of the gin config in bbf/configs (Alien, KungFuMaster, ...)
@@ -62,10 +63,9 @@ if [ -z "$REPLAY_RATIO" ] || [ -z "$BATCH_SIZE" ] ||[ -z "$SHORT_SIZE" ] || [ -z
   echo "Could not read the replay settings from the gin configs" >&2
   exit 1
 fi
-RR=$(( REPLAY_RATIO / BATCH_SIZE ))
-[ "$RR" -lt 1 ] && RR=1
+RR=$(awk "BEGIN { print $REPLAY_RATIO / $BATCH_SIZE }")
 
-RUN_NAME=short_long_bbf_rr${RR}_short${SHORT_SIZE}_frac${SAMPLING_FRACTION}_run${RUN_NUMBER}_${GAME}_100k
+RUN_NAME=short_long_sfq_rr${RR}_short${SHORT_SIZE}_frac${SAMPLING_FRACTION}_run${RUN_NUMBER}_${GAME}_100k
 LOG_FILE=results/$RUN_NAME.log
 
 source venv/bin/activate

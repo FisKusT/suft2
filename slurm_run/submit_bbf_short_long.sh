@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit bbf_short_long.sh (BBF with the short/long term replay buffer) as one job array
+# Submit bbf_short_long.sh (SF-Q with the short/long term replay buffer) as one job array
 # with a task for every (game, run) pair
 #
 # Usage:
