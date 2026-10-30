@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sfq_sl
-#SBATCH --partition=shaham-L40
+#SBATCH --partition=L40s-4h
 #SBATCH --gres=gpu:1
 #SBATCH --mem=100G
 
