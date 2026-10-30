@@ -1,0 +1,117 @@
+Changing the BBF replay ratio (RR)
+==================================
+
+RR here means gradient updates per env step, as in the BBF paper
+(DQN = 0.25: one batch of 32 every 4 agent steps).
+
+All changes are in bbf/configs/BBF.gin. The per-game configs only include
+BBF.gin and set the game name, so nothing else needs editing.
+
+
+1. Lines to change
+------------------
+
+Three lines change with the replay ratio:
+
+  BBFAgent.replay_ratio      (line 33)
+  BBFAgent.batches_to_group  (line 34)
+  BBFAgent.reset_every       (line 27)
+
+Values for each RR:
+
+  RR    | replay_ratio | batches_to_group | reset_every
+  ------+--------------+------------------+------------
+  0.25  |      8       |        1         |  160_000
+  1     |     32       |        1         |   40_000
+  2     |     64       |        2         |   20_000    <- current BBF.gin
+  4     |    128       |        4         |   10_000
+  8     |    256       |        8         |    5_000    <- BBF paper default
+
+RR 2 is what BBF.gin holds now and RR 8 is what it held before the
+"RR of 2" commit. The other three rows are derived with the rules below.
+
+
+2. Where the values come from
+-----------------------------
+
+replay_ratio
+  The gin value is samples per env step, not updates per env step:
+      replay_ratio = RR * batch_size = RR * 32
+  It must be a whole number. Never write 0.25 here: the agent casts it
+  with int(), which gives 0 and a division by zero.
+
+batches_to_group
+  How many batches are run inside one jitted call (a speed setting).
+  It must divide RR, so it is set equal to RR, and to 1 when RR <= 1.
+
+reset_every
+  Counted in env steps, but kept at 40,000 gradient steps between resets:
+      reset_every = 40_000 / RR
+
+
+3. What each RR gives in a 100K run
+-----------------------------------
+
+  RR    | update schedule            | gradient steps | resets
+  ------+----------------------------+----------------+-------
+  0.25  | 1 update every 4 env steps |     ~24,500    |    0
+  1     | 1 update per env step      |     ~98,000    |    1
+  2     | 2 updates per env step     |    ~196,000    |    3
+  4     | 4 updates per env step     |    ~392,000    |    8
+  8     | 8 updates per env step     |    ~784,000    |   18
+
+At RR 0.25 the 40,000-gradient-step rule puts the first reset at 160,000
+env steps, past the end of the run, so that run is BBF without resets.
+Keeping reset_every = 20_000 instead would give 3 resets, each after only
+5,000 gradient steps, which is shorter than cycle_steps (10,000), so the
+n-step / gamma annealing would never finish.
+
+
+4. Lines that stay the same
+---------------------------
+
+  BBFAgent.batch_size = 32
+      Fixed. replay_ratio is defined relative to it.
+
+  JaxDQNAgent.update_period = 1
+      Ignored. The agent recomputes it from replay_ratio and batch_size
+      (it becomes 4 at RR 0.25 and 1 otherwise).
+
+  BBFAgent.no_resets_after = 100_000
+      Tied to the run length, not to RR.
+
+  BBFAgent.cycle_steps = 10_000
+      Counted in gradient steps, so the n-step (10 -> 3) and gamma
+      (0.97 -> 0.997) annealing takes 10,000 / RR env steps:
+      40,000 at RR 0.25, 10,000 at RR 1, 5,000 at RR 2, 1,250 at RR 8.
+      Leave it alone if RR should be the only thing that changes.
+
+  BBFAgent.target_update_tau = 0.005, JaxDQNAgent.target_update_period = 1
+      Also per gradient step. No change needed.
+
+
+5. Before submitting RR 0.25 with slurm_run/bbf_baseline.sh
+-----------------------------------------------------------
+
+The script builds the run name from replay_ratio / batch_size with integer
+division and raises anything below 1 to 1. For replay_ratio = 8 that gives
+"rr1", the same name as a real RR 1 run:
+
+    results/baseline_bbf_rr1_run<N>_<Game>_100k
+
+The two would share a results directory and log file. Change the RR / run
+name logic in the script (for example name it rr0.25) before running both.
+RR 1, 2, 4 and 8 are named correctly.
+
+
+6. Checking that the change took effect
+---------------------------------------
+
+At startup the run log (results/<run name>.log) prints, for RR 0.25:
+
+    Calculated update frequency of 4 steps
+    Running 1 groups of 1 batch per 4 env steps
+
+and for RR 8:
+
+    Running 1 groups of 8 batches per 1 env step
