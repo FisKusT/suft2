@@ -2,7 +2,7 @@
 #SBATCH --job-name=sfq_sl
 #SBATCH --partition=shaham-L40
 #SBATCH --gres=gpu:1
-#SBATCH --mem=100G
+#SBATCH --mem=32G
 
 # SF-Q with the short/long term replay buffer: a single run on one Atari game (Atari 100k)
 # The short term buffer (most recent transitions) is sampled uniformly and the long term
@@ -65,7 +65,7 @@ if [ -z "$REPLAY_RATIO" ] || [ -z "$BATCH_SIZE" ] ||[ -z "$SHORT_SIZE" ] || [ -z
 fi
 RR=$(awk "BEGIN { print $REPLAY_RATIO / $BATCH_SIZE }")
 
-RUN_NAME=short_long_sfq_rr${RR}_short${SHORT_SIZE}_frac${SAMPLING_FRACTION}_run${RUN_NUMBER}_${GAME}_100k
+RUN_NAME=short_long_sfq_not_augmented_state_rr${RR}_short${SHORT_SIZE}_frac${SAMPLING_FRACTION}_run${RUN_NUMBER}_${GAME}_100k
 LOG_FILE=results/$RUN_NAME.log
 
 source venv/bin/activate
