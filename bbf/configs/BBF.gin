@@ -38,8 +38,8 @@ BBFAgent.jumps = 5
 BBFAgent.data_augmentation = True
 BBFAgent.replay_scheme = 'short_long'    # 'prioritized' (BBF), 'uniform' or 'short_long' (see the short/long buffer settings below)
 # SUFT: weight of the MSE between Q_current(s, a) and the Q_old(s, a) stored when the transition
-# was collected, added for the short term samples only. Requires replay_scheme = 'short_long' and
-# target_action_selection = False, 0 disables it
+# was collected, added for the short term samples only. Requires replay_scheme = 'short_long',
+# 0 disables it. Q_old always comes from the online network, also with target_action_selection = True
 BBFAgent.tf_lambda = 1.0
 BBFAgent.half_precision = False
 BBFAgent.network    = @bbf.spr_networks.RainbowDQNNetwork
@@ -48,7 +48,7 @@ BBFAgent.learning_rate = 0.0001
 BBFAgent.encoder_learning_rate = 0.0001
 
 BBFAgent.target_update_tau = 0.005
-BBFAgent.target_action_selection = False    # act with the online network, needed by SUFT (BBF default: True)
+BBFAgent.target_action_selection = True    # act with the target network (BBF default), SUFT's Q_old still comes from the online network
 
 bbf.spr_networks.RainbowDQNNetwork.renormalize = True
 bbf.spr_networks.RainbowDQNNetwork.hidden_dim = 2048

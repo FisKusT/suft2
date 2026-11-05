@@ -1157,10 +1157,11 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       target_eval_mode: bool, run target network in eval mode, disabling dropout
         etc.
       tf_lambda: float, weight of the SUFT term, the MSE between the current
-        Q(s, a) and the Q(s, a) the online network gave for the action it took
-        when the transition was collected. Only added for the short term
-        samples, so it requires replay_scheme='short_long' and
-        target_action_selection=False. 0 disables it.
+        Q(s, a) and the Q(s, a) the online network gave for the action taken
+        when the transition was collected (with target_action_selection the
+        target network picks the action and the online network gives its
+        Q(s, a)). Only added for the short term samples, so it requires
+        replay_scheme='short_long'. 0 disables it.
       suft_debug_checks: bool, validate the SUFT term while training (masks,
         loss composition, detached Q_old) and print SUFT loss values. Slow,
         for debugging only.
@@ -1248,11 +1249,6 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
 
     self.eval_noise = eval_noise
     self.target_action_selection = target_action_selection
-    if self._use_suft and target_action_selection:
-      # SUFT CHANGE: Q_old(s, a) is taken from the network that acts, it must
-      # be the online one (the network the SUFT term is applied to)
-      raise ValueError("tf_lambda > 0 (SUFT) requires "
-                       "target_action_selection=False")
     self.use_target_network = use_target_network
     self.match_online_target_rngs = match_online_target_rngs
     self.target_eval_mode = target_eval_mode
