@@ -90,18 +90,18 @@ n-step / gamma annealing would never finish.
       Also per gradient step. No change needed.
 
 
-5. Before submitting RR 0.25 with slurm_run/bbf_baseline.sh
------------------------------------------------------------
+5. Run names
+------------
 
-The script builds the run name from replay_ratio / batch_size with integer
-division and raises anything below 1 to 1. For replay_ratio = 8 that gives
-"rr1", the same name as a real RR 1 run:
+slurm_run/bbf_baseline.sh and slurm_run/bbf_short_long.sh build the run name
+from replay_ratio / batch_size as a decimal, so every RR gets its own results
+directory and log file:
 
-    results/baseline_bbf_rr1_run<N>_<Game>_100k
+    results/baseline_bbf_rr0.25_run<N>_<Game>_100k
+    results/baseline_bbf_rr2_run<N>_<Game>_100k
+    results/short_long_bbf_rr0.25_short<size>_frac<fraction>_run<N>_<Game>_100k
 
-The two would share a results directory and log file. Change the RR / run
-name logic in the script (for example name it rr0.25) before running both.
-RR 1, 2, 4 and 8 are named correctly.
+The "replay ratio" line that bbf/train.py prints at startup uses the same value.
 
 
 6. Checking that the change took effect

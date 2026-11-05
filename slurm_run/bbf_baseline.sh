@@ -49,8 +49,8 @@ if [ -z "$REPLAY_RATIO" ] || [ -z "$BATCH_SIZE" ]; then
   echo "Could not read BBFAgent.replay_ratio / BBFAgent.batch_size from the gin configs" >&2
   exit 1
 fi
-RR=$(( REPLAY_RATIO / BATCH_SIZE ))
-[ "$RR" -lt 1 ] && RR=1
+# Formatted as a decimal (0.25, 1, 2, ...) so that RR below 1 gets its own run name
+RR=$(awk -v r="$REPLAY_RATIO" -v b="$BATCH_SIZE" 'BEGIN { print r / b }')
 
 RUN_NAME=baseline_bbf_rr${RR}_run${RUN_NUMBER}_${GAME}_100k
 
