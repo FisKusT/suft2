@@ -12,7 +12,7 @@
 #   TF_LAMBDAS      SUFT weights, one job array each, default "0 1"
 #   EPSILON         epsilon_train, default 0.05
 #   RUNS            run numbers, default "0 1 2 3"
-#   PARTITION       Slurm partition, default shaham-L40
+#   PARTITION       Slurm partition, default shaham-L40-fast
 #   MAX_PARALLEL    run at most this many tasks of each job array at a time
 #   MAIL_USER       email address, default fiskust@biu.ac.il
 #   DRY_RUN=1       print the sbatch commands and the task lists without submitting
@@ -25,7 +25,7 @@ REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 TF_LAMBDAS=${TF_LAMBDAS:-"0 1"}
 EPSILON=${EPSILON:-0.05}
 RUNS=${RUNS:-"0 1 2 3"}
-PARTITION=${PARTITION:-shaham-L40}
+PARTITION=${PARTITION:-shaham-L40-fast}
 MAIL_USER=${MAIL_USER:-fiskust@biu.ac.il}
 
 # The 26 games of the Atari 100k benchmark
