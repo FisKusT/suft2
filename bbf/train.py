@@ -253,6 +253,14 @@ def main(unused_argv):
   print('=' * 80)
   
   run_experiment.load_gin_configs(gin_files, gin_bindings)
+  # SUFT CHANGE: print the SUFT weight of this run
+  try:
+    tf_lambda = gin.query_parameter('BBFAgent.tf_lambda')
+  except ValueError:
+    tf_lambda = 0.0
+  print(f'SUFT tf_lambda: {tf_lambda}'
+        + (' (disabled)' if not tf_lambda else
+           ', on every sample of the single replay buffer'))
 
   write_config(base_dir, seed, FLAGS.tag, FLAGS.agent)
 

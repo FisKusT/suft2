@@ -440,7 +440,12 @@ def select_action(
       ),
       best_actions,
   )
-  return rng, new_actions
+  # SUFT CHANGE: Q(s, a) of the action actually taken, from the Q-values used
+  # to pick it. Detached: it is stored in the replay buffer as Q_old(s, a), a
+  # fixed value that no gradient flows through.
+  taken_q_values = jax.lax.stop_gradient(
+      jnp.take_along_axis(q_values, new_actions[:, None], axis=-1)[:, 0])
+  return rng, new_actions, taken_q_values
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0), axis_name="batch")
@@ -452,7 +457,9 @@ def get_q_values_no_actions(model, states, rng):
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
 def get_logits(model, states, actions, do_rollout, rng):
   results = model(states, actions=actions, do_rollout=do_rollout, key=rng)[0]
-  return results.logits, results.latent, results.representation
+  # SUFT CHANGE: also the Q-values the network computes from the logits
+  return (results.logits, results.latent, results.representation,
+          results.q_values)
 
 
 @functools.partial(jax.vmap, in_axes=(None, 0, 0, None, 0), axis_name="batch")
@@ -513,6 +520,8 @@ def train(
     step,  # 25
     match_online_target_rngs,  # 26, static
     target_eval_mode,  # 27, static
+    old_q_values,  # 28
+    suft_weights,  # 29
   ):
   """Run one or more training steps for BBF.
 
@@ -551,6 +560,10 @@ def train(
       networks, to sync dropout etc.
     target_eval_mode: Whether to run the target network in eval mode (disabling
       dropout).
+    old_q_values: Q_old(s, a) stored with each transition when it was
+      collected, (B,). Used by the SUFT term.
+    suft_weights: Weight of the SUFT term of each sample, (B,): tf_lambda for
+      every sample (single replay buffer), 0 when SUFT is disabled.
 
   Returns:
     Updated online params, target params, optimizer state, dynamic scale,
@@ -580,6 +593,8 @@ def train(
         same_traj_mask,
         loss_weights,
         cumulative_gamma,
+        old_q_values,
+        suft_weights,
     ) = inputs
     same_traj_mask = same_traj_mask[:, 1:]
     rewards = rewards[:, 0]
@@ -663,7 +678,7 @@ def train(
         )
 
       if distributional:
-        (logits, spr_predictions, _) = get_logits(
+        (logits, spr_predictions, _, q_values) = get_logits(
             q_online, current_state, actions[:, :-1], use_spr, batch_rngs
         )
         logits = jnp.squeeze(logits)
@@ -675,6 +690,8 @@ def train(
         dqn_loss = jax.vmap(losses.softmax_cross_entropy_loss_with_logits)(
             target, chosen_action_logits)
         td_error = dqn_loss + jnp.nan_to_num(target * jnp.log(target)).sum(-1)
+        # SUFT CHANGE: Q_current(s, a) of the chosen action, from the network
+        chosen_q = jax.vmap(lambda x, y: x[y])(q_values, actions[:, 0])
       else:
         q_values, spr_predictions, _ = get_q_values(
             q_online, current_state, actions[:, :-1], use_spr, batch_rngs
@@ -683,6 +700,7 @@ def train(
         replay_chosen_q = jax.vmap(lambda x, y: x[y])(q_values, actions[:, 0])
         dqn_loss = jax.vmap(losses.huber_loss)(target, replay_chosen_q)
         td_error = dqn_loss
+        chosen_q = replay_chosen_q
 
       if use_spr:
         spr_predictions = spr_predictions.transpose(1, 0, 2)
@@ -695,8 +713,21 @@ def train(
       else:
         spr_loss = 0
 
-      loss = dqn_loss + spr_weight * spr_loss
-      loss = loss_multipliers * loss
+      # SUFT CHANGE
+      # MSE between Q_current(s, a) and Q_old(s, a), for every sample of the
+      # batch (suft_weights is tf_lambda for all of them, single buffer).
+      # Like the TD loss, it is scaled by the prioritized replay importance
+      # weights (loss_multipliers) and averaged over the whole batch.
+      # Q_old(s, a) is a fixed target: the gradient only flows through
+      # Q_current(s, a).
+      old_q_values_target = jax.lax.stop_gradient(old_q_values)
+      suft_loss = loss_multipliers * suft_weights * jnp.square(
+          chosen_q - old_q_values_target)
+      # SUFT CHANGE until here
+
+      td_spr_loss = loss_multipliers * (dqn_loss + spr_weight * spr_loss)
+      # SUFT CHANGE: the SUFT term is part of the loss that is differentiated
+      loss = td_spr_loss + suft_loss
 
       mean_loss = jnp.mean(loss)
 
@@ -705,6 +736,13 @@ def train(
           "DQNLoss": jnp.mean(dqn_loss),
           "TD Error": jnp.mean(td_error),
           "SPRLoss": jnp.mean(spr_loss),
+          # SUFT CHANGE: TotalLoss = WeightedTDSPRLoss + SUFTLoss
+          "WeightedTDSPRLoss": jnp.mean(td_spr_loss),
+          "SUFTLoss": jnp.mean(suft_loss),
+          # Per sample values (B,), used by the SUFT debug checks
+          "SUFTPerSample": suft_loss,
+          "QCurrent": chosen_q,
+          "QOld": old_q_values_target,
       }
 
       return mean_loss, (aux_losses)
@@ -829,6 +867,8 @@ def train(
       cumulative_gamma.reshape(
           num_batches, batch_size, *cumulative_gamma.shape[1:]
       ),
+      old_q_values.reshape(num_batches, batch_size),
+      suft_weights.reshape(num_batches, batch_size),
   )
 
   (
@@ -1037,6 +1077,8 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       match_online_target_rngs=True,
       target_eval_mode=False,
       offline_update_frac=0,
+      tf_lambda=0.0,
+      suft_debug_checks=False,
       summary_writer=None,
       half_precision=False,
       log_churn=True,
@@ -1114,6 +1156,15 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         between the two networks.
       target_eval_mode: bool, run target network in eval mode, disabling dropout
         etc.
+      tf_lambda: float, weight of the SUFT term, the MSE between the current
+        Q(s, a) and the Q(s, a) of the action taken when the transition was
+        collected, from the network that acted (the target network when
+        target_action_selection is True). Added for every sample of the batch
+        (single replay buffer) and scaled by the prioritized replay importance
+        weights, like the TD loss. 0 disables it.
+      suft_debug_checks: bool, validate the SUFT term while training (masks,
+        loss composition, detached Q_old) and print SUFT loss values. Slow,
+        for debugging only.
       offline_update_frac: float, fraction of a reset interval to do offline
         after each reset to warm-start the new network. summary_writer=None,
       summary_writer: SummaryWriter object, for outputting training statistics.
@@ -1143,6 +1194,14 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     vmin = float(vmin) if vmin else -vmax
     self._support = jnp.linspace(vmin, vmax, self._num_atoms)
     self._replay_scheme = replay_scheme
+    # SUFT CHANGE
+    self._tf_lambda = float(tf_lambda)
+    self._use_suft = self._tf_lambda > 0
+    logging.info("\t tf_lambda (SUFT): %f", self._tf_lambda)
+    self._suft_debug_checks = bool(suft_debug_checks) and self._use_suft
+    self._suft_debug_count = 0
+    self._suft_grad_checks_done = set()
+    # SUFT CHANGE until here
     self._replay_type = replay_type
     self._double_dqn = bool(double_dqn)
     self._noisy = bool(noisy)
@@ -1345,6 +1404,10 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       raise ValueError("Invalid replay scheme: {}".format(self._replay_scheme))
     if self._replay_type not in ["deterministic"]:
       raise ValueError("Invalid replay type: {}".format(self._replay_type))
+    # SUFT CHANGE: Q_old(s, a) of the action taken, stored with the transition
+    extra_storage_types = [
+        ReplayElement("old_q_value", (), onp.float32)
+    ] if self._use_suft else None
     if self._replay_scheme == "prioritized":
       buffer = subsequence_replay_buffer.PrioritizedJaxSubsequenceParallelEnvReplayBuffer(
           observation_shape=self.observation_shape,
@@ -1354,6 +1417,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           subseq_len=self._jumps + 1,
           batch_size=self._batch_size,
           observation_dtype=self.observation_dtype,
+          extra_storage_types=extra_storage_types,
       )
     else:
       buffer = subsequence_replay_buffer.JaxSubsequenceParallelEnvReplayBuffer(
@@ -1364,6 +1428,7 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
           subseq_len=self._jumps + 1,
           batch_size=self._batch_size,
           observation_dtype=self.observation_dtype,
+          extra_storage_types=extra_storage_types,
       )
 
     self.n_envs = buffer._n_envs  # pylint: disable=protected-access
@@ -1574,6 +1639,18 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       # Uniform weights if not using prioritized replay.
       loss_weights = onp.ones(self.replay_elements["state"].shape[0:2])
 
+    # SUFT CHANGE
+    batch_shape = onp.asarray(self.replay_elements["action"]).shape[:1]
+    if self._use_suft:
+      old_q_values = onp.asarray(
+          self.replay_elements["old_q_value"], dtype=onp.float32)[:, 0]
+      # Single buffer: the SUFT term is added for every sample
+      suft_weights = onp.full(batch_shape, self._tf_lambda, dtype=onp.float32)
+    else:
+      old_q_values = onp.zeros(batch_shape, dtype=onp.float32)
+      suft_weights = onp.zeros(batch_shape, dtype=onp.float32)
+    # SUFT CHANGE until here
+
     if self.log_churn and should_log:
       eval_batch = self.sample_eval_batch(256)
       eval_states = eval_batch["state"].reshape(-1,
@@ -1633,7 +1710,12 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.grad_steps,
         self.match_online_target_rngs,
         self.target_eval_mode,
+        old_q_values,
+        suft_weights,
     )
+    if self._suft_debug_checks:
+      self._suft_debug_check_batch(
+          loss_weights, suft_weights, old_q_values, aux_losses, should_log)
     self.grad_steps += self._batches_to_group
     self.cycle_grad_steps += self._batches_to_group
 
@@ -1840,13 +1922,129 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     self._record_observation(observation)
 
     if not self.eval_mode:
+      # SUFT CHANGE: Q_old(s, a) computed in step() when the action was taken
+      extra = (self._old_q_values,) if self._use_suft else ()
       self._store_transition(
           self._last_observation,
           action,
           reward,
           terminal,
+          *extra,
           episode_end=episode_end,
       )
+      if self._suft_debug_checks:
+        self._suft_debug_check_stored()
+
+  # SUFT CHANGE: debug checks (BBFAgent.suft_debug_checks = True)
+  def _suft_debug_check_batch(self, loss_weights, suft_weights, old_q_values,
+                              aux_losses, should_log):
+    """Checks that the SUFT term is applied to every sample of the batch."""
+    self._suft_debug_count += 1
+    count = self._suft_debug_count
+    loss_weights = onp.asarray(loss_weights, dtype=onp.float32).reshape(-1)
+    aux = {k: onp.asarray(v) for k, v in aux_losses.items()}
+    q_current = aux["QCurrent"].reshape(-1)
+    q_old = aux["QOld"].reshape(-1)
+    suft_per_sample = aux["SUFTPerSample"].reshape(-1)
+    suft_mask = suft_weights / self._tf_lambda
+    batch_size = len(suft_mask)
+
+    # 1. Single buffer: every sample has the SUFT term (mask 1), and the loss
+    #    multipliers are the importance weights, <= 1 (the largest one is
+    #    exactly 1 after normalization; all 1 with uniform replay).
+    assert onp.all(suft_mask == 1.0), "sample without the SUFT term"
+    assert onp.all(loss_weights <= 1.0 + 1e-6)
+    # 2. The Q_old the loss used is the stored one
+    assert onp.allclose(q_old, old_q_values), "Q_old changed on the way"
+    # 3. SUFT per sample = importance weight * tf_lambda * (Q_current - Q_old)^2
+    expected = loss_weights * suft_weights * onp.square(q_current - q_old)
+    assert onp.allclose(suft_per_sample, expected, rtol=1e-4, atol=1e-6)
+    # 4. SUFTLoss is in the loss: TotalLoss = WeightedTDSPRLoss + SUFTLoss,
+    #    and SUFTLoss = mean over the batch
+    num_groups = aux["TotalLoss"].reshape(-1).shape[0]
+    suft_by_group = expected.reshape(num_groups, -1).mean(axis=1)
+    assert onp.allclose(aux["SUFTLoss"].reshape(-1), suft_by_group,
+                        rtol=1e-4, atol=1e-6)
+    assert onp.allclose(
+        aux["TotalLoss"].reshape(-1),
+        aux["WeightedTDSPRLoss"].reshape(-1) + aux["SUFTLoss"].reshape(-1),
+        rtol=1e-4, atol=1e-6), "TotalLoss != WeightedTDSPRLoss + SUFTLoss"
+
+    if count <= 2:
+      print(f"[SUFT check] gradient step {count}: batch of {batch_size}, "
+            f"tf_lambda {self._tf_lambda}")
+      print("[SUFT check]    i  loss_mult  suft_mask      Q_old"
+            "  Q_current   SUFT term")
+      for i in range(batch_size):
+        print(f"[SUFT check] {i:4d}"
+              f"  {loss_weights[i]:9.4f}  {suft_mask[i]:9.1f}"
+              f"  {q_old[i]:9.4f}  {q_current[i]:9.4f}"
+              f"  {suft_per_sample[i]:10.6f}")
+    if count <= 30 or should_log:
+      print(f"[SUFT check] gradient step {count}: all checks passed | "
+            f"SUFTLoss {aux['SUFTLoss'].mean():.6f}  "
+            f"TotalLoss {aux['TotalLoss'].mean():.6f} = "
+            f"WeightedTDSPRLoss {aux['WeightedTDSPRLoss'].mean():.6f} + "
+            f"SUFTLoss | mean |Q_current - Q_old| "
+            f"{onp.abs(q_current - q_old).mean():.6f}", flush=True)
+
+  def _suft_debug_check_acting(self, state, select_params, use_noise):
+    """Checks that Q_old is detached before it is stored."""
+    # The stored value is a plain numpy array: no gradient can be attached.
+    assert type(self._old_q_values) is onp.ndarray, type(self._old_q_values)
+    assert self._old_q_values.dtype == onp.float32
+    assert self._old_q_values.shape == (self.n_envs,)
+
+    # Gradient test, once before and once after training starts: the gradient
+    # of the Q_old returned by select_action() with respect to the network
+    # parameters must be 0 (stop_gradient), while the gradient of the same
+    # Q-values without it (control) is not.
+    stage = "before training" if self.grad_steps == 0 else "during training"
+    if stage in self._suft_grad_checks_done:
+      return
+    self._suft_grad_checks_done.add(stage)
+    rng = jax.random.PRNGKey(0)
+
+    def stored_q_sum(params):
+      _, _, taken_q = select_action(
+          self.network_def, params, state, rng, self.num_actions,
+          self.eval_mode, self.epsilon_eval, self.epsilon_train,
+          self.epsilon_decay_period, self.training_steps,
+          self.min_replay_history, self.epsilon_fn, self._support,
+          not use_noise)
+      return jnp.sum(taken_q)
+
+    def raw_q_sum(params):
+      def q_online(x, key, actions=None, do_rollout=False):
+        return self.network_def.apply(
+            params, x, actions=actions, do_rollout=do_rollout, key=key,
+            support=self._support, rngs={"dropout": key},
+            mutable=["batch_stats"], eval_mode=not use_noise)
+      x = spr_networks.process_inputs(
+          state, data_augmentation=False, dtype=jnp.float32)
+      q = get_q_values_no_actions(
+          q_online, x, jax.random.split(rng, x.shape[0]))
+      return jnp.sum(jnp.max(q, axis=-1))
+
+    stored_grad = float(tree_norm(jax.grad(stored_q_sum)(select_params)))
+    control_grad = float(tree_norm(jax.grad(raw_q_sum)(select_params)))
+    print(f"[SUFT check] detach test ({stage}): |d Q_old / d params| = "
+          f"{stored_grad:.3e} (must be 0), control without stop_gradient = "
+          f"{control_grad:.3e} (nonzero)", flush=True)
+    assert stored_grad == 0.0, "Q_old is not detached from the network"
+    assert control_grad > 0.0, "control gradient is 0, the test is not valid"
+
+  def _suft_debug_check_stored(self):
+    """Checks that the buffer holds exactly the Q_old computed when acting."""
+    index = (int(self._replay.add_count) - 1) % self._replay._replay_length  # pylint: disable=protected-access
+    stored = self._replay._store["old_q_value"][index]  # pylint: disable=protected-access
+    assert onp.array_equal(stored, self._old_q_values), (stored,
+                                                         self._old_q_values)
+    if int(self._replay.add_count) <= 3:
+      print(f"[SUFT check] transition {int(self._replay.add_count)}: "
+            f"Q_old {self._old_q_values} stored as {stored} "
+            f"({type(stored).__name__}, {stored.dtype})", flush=True)
+  # SUFT CHANGE until here
 
   def select_action(
       self,
@@ -1856,11 +2054,12 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
       use_noise=True,
       force_zero_eps=False,
       rng=None,
+      return_q_values=False,
   ):
     force_rng = rng is not None
     if not force_rng:
       rng = self._rng
-    new_rng, action = select_action(
+    new_rng, action, taken_q_values = select_action(
         self.network_def,
         select_params,
         state,
@@ -1878,6 +2077,9 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
     )
     if not force_rng:
       self._rng = new_rng
+    if return_q_values:
+      # SUFT CHANGE: also Q(s, a) of the selected actions
+      return action, taken_q_values
     return action
 
   def step(self):
@@ -1892,11 +2094,21 @@ class BBFAgent(dqn_agent.JaxDQNAgent):
         self.target_network_params if use_target else self.online_params)
     use_noise = self.eval_noise or not self.eval_mode
 
-    action = self.select_action(
+    action, taken_q_values = self.select_action(
         state,
         select_params,
         eval_mode=self.eval_mode,
         use_noise=use_noise,
+        return_q_values=True,
     )
+    # SUFT CHANGE: Q_old(s, a) of the action taken, from the network that
+    # picked it (the target network when target_action_selection is True, the
+    # online one otherwise), stored with the transition in log_transition()
+    if self._use_suft and not self.eval_mode:
+      # A plain numpy copy (the JAX counterpart of .detach().cpu().numpy())
+      self._old_q_values = onp.asarray(
+          jax.device_get(taken_q_values), dtype=onp.float32)
+      if self._suft_debug_checks:
+        self._suft_debug_check_acting(state, select_params, use_noise)
     self.action = onp.asarray(action)
     return self.action
