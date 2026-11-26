@@ -72,3 +72,5 @@ dmypy.json
 suft2/
 # SLURM runs
 slurm-*.out
+
+/results
